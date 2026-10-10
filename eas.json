@@ -15,9 +15,7 @@
       },
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://nqwgxkdpwpgqkezaqsrx.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_fxLPfAbQ8EL8HM5-NS_lqQ_0AMzCWCY",
-        "EXPO_PUBLIC_CASHFREE_ENV": "PRODUCTION",
-        "EXPO_PUBLIC_CASHFREE_APP_ID": "13889028906e60f591e43bbcf1f2098831"
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_fxLPfAbQ8EL8HM5-NS_lqQ_0AMzCWCY"
       },
       "channel": "preview"
     },
@@ -25,9 +23,7 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://nqwgxkdpwpgqkezaqsrx.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_fxLPfAbQ8EL8HM5-NS_lqQ_0AMzCWCY",
-        "EXPO_PUBLIC_CASHFREE_ENV": "PRODUCTION",
-        "EXPO_PUBLIC_CASHFREE_APP_ID": "13889028906e60f591e43bbcf1f2098831"
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_fxLPfAbQ8EL8HM5-NS_lqQ_0AMzCWCY"
       },
       "channel": "production"
     }

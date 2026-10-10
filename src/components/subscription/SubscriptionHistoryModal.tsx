@@ -454,7 +454,7 @@ export const SubscriptionHistoryModal: React.FC<SubscriptionHistoryModalProps> =
 
               {/* Footnote */}
               <Text style={[styles.footnote, { color: colors.textSubtle }]}>
-                🔒 Official StyleFleet subscription payments are secured via Cashfree Payments. Tax invoices are automatically registered to your salon account.
+                🔒 Official StyleFleet subscription payments are secured via Razorpay. Tax invoices are automatically registered to your salon account.
               </Text>
             </ScrollView>
           )}

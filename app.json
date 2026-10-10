@@ -3,7 +3,7 @@
     "name": "StyleFleet",
     "slug": "stylefleet",
     "scheme": "stylefleet",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -15,6 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "infoPlist": {
+        "LSApplicationQueriesSchemes": ["tez", "phonepe", "paytmmp"],
         "NSContactsUsageDescription": "StyleFleet needs access to your contacts to import clients into your salon roster."
       }
     },

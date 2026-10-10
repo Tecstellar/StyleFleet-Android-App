@@ -14,9 +14,10 @@ const STORAGE_KEY_SUB_CACHE = '@salon_os_sub_cache_';
 const STORAGE_KEY_REG_DATE = '@salon_os_reg_date_';
 const STORAGE_KEY_ACTIVE_PLAN = '@salon_os_active_plan_';
 
-export const CASHFREE_ENV = (process.env.EXPO_PUBLIC_CASHFREE_ENV || 'SANDBOX').toUpperCase();
-// The Cashfree secret key never ships in the app: every Cashfree call goes through the
-// `cashfree-service` Supabase Edge Function, which holds the key as a server secret.
+// The Razorpay key secret never ships in the app: every Razorpay call that needs it goes through the
+// `razorpay-service` Supabase Edge Function. The app only receives the public key id for the checkout.
+// (The subscriptions columns cashfree_order_id / cashfree_payment_id keep their old names and now hold
+// the Razorpay order and payment ids.)
 
 /** The reason the payment server gave when it refused a request (its answer comes back inside the error). */
 async function serverReason(error: unknown): Promise<string | null> {
@@ -68,7 +69,7 @@ export class SubscriptionRepository {
     try {
       if (!orderId || orderId.startsWith('test_')) return false;
 
-      const { data, error } = await supabase.functions.invoke('cashfree-service', {
+      const { data, error } = await supabase.functions.invoke('razorpay-service', {
         body: { action: 'check-order', orderId },
       });
       return !error && data?.paid === true;
@@ -242,8 +243,8 @@ export class SubscriptionRepository {
   }
 
   /**
-   * Calls Supabase Edge Function to create a Cashfree payment order.
-   * If Edge Function is not yet deployed, falls back to direct Cashfree Hosted Links API.
+   * Asks the payment server to create a Razorpay order for the plan. The server decides the price.
+   * Returns what the native checkout needs to open.
    */
   async createPaymentOrder(params: {
     shopId: string;
@@ -253,7 +254,13 @@ export class SubscriptionRepository {
     customerEmail?: string;
     isLaunchOffer?: boolean;
     registrationDateIso?: string;
-  }): Promise<{ paymentSessionId: string; orderId: string; paymentLinkUrl?: string; cfOrderId?: string; isSandbox?: boolean }> {
+  }): Promise<{
+    orderId: string;
+    keyId: string;
+    amountPaise: number;
+    currency: string;
+    customer: { name: string; phone: string; email: string };
+  }> {
     const isLaunch =
       params.isLaunchOffer !== undefined
         ? params.isLaunchOffer
@@ -264,11 +271,10 @@ export class SubscriptionRepository {
     }
 
     const cleanPhone = (params.customerPhone || '9999999999').replace(/\D/g, '').slice(-10);
-    const safeLinkId = `sf_link_${(params.shopId || 'shop').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}_${Date.now()}`;
 
-    // The order is created on the server, which holds the Cashfree secret
+    // The order is created on the server, which holds the Razorpay secret
     {
-      const { data, error } = await supabase.functions.invoke('cashfree-service', {
+      const { data, error } = await supabase.functions.invoke('razorpay-service', {
         body: {
           action: 'create-order',
           shopId: params.shopId,
@@ -281,13 +287,17 @@ export class SubscriptionRepository {
         },
       });
 
-      if (!error && data && (data.paymentLinkUrl || data.paymentSessionId)) {
+      if (!error && data && data.orderId && data.keyId) {
         return {
-          paymentSessionId: data.paymentSessionId || '',
-          paymentLinkUrl: data.paymentLinkUrl,
-          orderId: data.orderId || safeLinkId,
-          cfOrderId: data.cfOrderId,
-          isSandbox: CASHFREE_ENV !== 'PRODUCTION',
+          orderId: data.orderId,
+          keyId: data.keyId,
+          amountPaise: Number(data.amountPaise),
+          currency: data.currency || 'INR',
+          customer: {
+            name: data.customer?.name || params.customerName || '',
+            phone: data.customer?.phone || cleanPhone,
+            email: data.customer?.email || params.customerEmail || '',
+          },
         };
       }
 
@@ -300,7 +310,7 @@ export class SubscriptionRepository {
   }
 
   /**
-   * Calls Supabase Edge Function or Cashfree API to verify payment and activate subscription.
+   * Asks the payment server to confirm the payment with Razorpay and activate the plan.
    */
   async verifyPaymentOrder(params: {
     orderId: string;
@@ -309,11 +319,11 @@ export class SubscriptionRepository {
     /** Whether the salon paid the launch-offer price (used only if the gateway does not report the amount) */
     isLaunchOffer?: boolean;
   }): Promise<{ success: boolean; message: string }> {
-    // The payment is checked on the server, which holds the Cashfree secret
+    // The payment is checked on the server, which holds the Razorpay secret
     try {
-      const { data, error } = await supabase.functions.invoke('cashfree-service', {
+      const { data, error } = await supabase.functions.invoke('razorpay-service', {
         body: {
-          action: 'verify-order',
+          action: 'verify-payment',
           orderId: params.orderId,
           shopId: params.shopId,
           planId: params.planId,

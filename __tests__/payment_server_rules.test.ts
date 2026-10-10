@@ -6,7 +6,7 @@ import {
   normalizePlanId,
   planDays,
   priceRupees,
-} from '../supabase/functions/_shared/plans';
+} from '../supabase/functions/_shared/payments';
 import {
   LAUNCH_OFFER_SUBSCRIPTION_PLANS,
   STANDARD_SUBSCRIPTION_PLANS,
@@ -88,13 +88,26 @@ describe('the app and the payment server', () => {
     isLaunchOffer: false,
   };
 
-  it('sends the price it showed only as a cross-check, never as the amount to charge', async () => {
-    mockInvoke.mockResolvedValue({ data: { success: true, orderId: 'sf_x', paymentSessionId: 'sess' }, error: null });
-    await subscriptionRepository.createPaymentOrder(order);
+  const created = {
+    success: true,
+    orderId: 'order_Abc123',
+    keyId: 'rzp_test_publicid',
+    amountPaise: 599900,
+    currency: 'INR',
+    customer: { name: 'Asha', phone: '9876543210', email: '' },
+  };
 
+  it('asks the Razorpay payment server, sending the price it showed only as a cross-check', async () => {
+    mockInvoke.mockResolvedValue({ data: created, error: null });
+    const result = await subscriptionRepository.createPaymentOrder(order);
+
+    expect(mockInvoke.mock.calls[0][0]).toBe('razorpay-service');
     const body = mockInvoke.mock.calls[0][1].body;
     expect(body.expectedAmount).toBe(5999);
     expect(body).not.toHaveProperty('amount');
+    expect(result.orderId).toBe('order_Abc123');
+    expect(result.keyId).toBe('rzp_test_publicid');
+    expect(result.amountPaise).toBe(599900);
   });
 
   it('shows the reason the server gives when it refuses to start a payment', async () => {
@@ -105,7 +118,7 @@ describe('the app and the payment server', () => {
     await expect(subscriptionRepository.createPaymentOrder(order)).rejects.toThrow(/price for this plan/);
   });
 
-  it('does not fall back to calling Cashfree directly when the server cannot be reached', async () => {
+  it('never calls a payment gateway directly when the server cannot be reached', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch' as never).mockImplementation((() => {
       throw new Error('fetch must not be called');
     }) as never);
@@ -122,26 +135,27 @@ describe('the app and the payment server', () => {
       error: null,
     });
     const result = await subscriptionRepository.verifyPaymentOrder({
-      orderId: 'sf_x',
+      orderId: 'order_Abc123',
       shopId: order.shopId,
       planId: order.planId,
     });
 
+    expect(mockInvoke.mock.calls[0][1].body.action).toBe('verify-payment');
     expect(result.success).toBe(true);
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it('reports a payment the server did not confirm as not activated', async () => {
-    mockInvoke.mockResolvedValue({ data: { success: false, status: 'ACTIVE' }, error: null });
-    const pending = await subscriptionRepository.verifyPaymentOrder({ orderId: 'sf_x', shopId: order.shopId, planId: order.planId });
+    mockInvoke.mockResolvedValue({ data: { success: false, status: 'attempted' }, error: null });
+    const pending = await subscriptionRepository.verifyPaymentOrder({ orderId: 'order_Abc123', shopId: order.shopId, planId: order.planId });
     expect(pending.success).toBe(false);
-    expect(pending.message).toMatch(/ACTIVE/);
+    expect(pending.message).toMatch(/attempted/);
 
     mockInvoke.mockResolvedValue({
       data: null,
       error: { context: { json: async () => ({ error: 'This payment belongs to a different salon.' }) } },
     });
-    const refused = await subscriptionRepository.verifyPaymentOrder({ orderId: 'sf_x', shopId: order.shopId, planId: order.planId });
+    const refused = await subscriptionRepository.verifyPaymentOrder({ orderId: 'order_Abc123', shopId: order.shopId, planId: order.planId });
     expect(refused.success).toBe(false);
     expect(refused.message).toMatch(/different salon/);
     expect(mockInsert).not.toHaveBeenCalled();

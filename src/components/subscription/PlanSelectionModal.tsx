@@ -8,10 +8,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
-  Linking,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
+import RazorpayCheckout from 'react-native-razorpay';
 import { useTheme } from '../../theme/ThemeContext';
 import { spacing, radii } from '../../theme/spacing';
 import { useLanguage } from '../../i18n/LanguageContext';
@@ -31,7 +29,6 @@ import {
 } from '../../utils/subscriptionUtils';
 import { shopRepository } from '../../repositories/shopRepository';
 import { subscriptionRepository } from '../../repositories/subscriptionRepository';
-import { CashfreeCheckoutModal } from './CashfreeCheckoutModal';
 import { SparklesIcon } from '../common/SvgIcons';
 
 interface PlanSelectionModalProps {
@@ -96,16 +93,6 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
   const [isVerifying, setIsVerifying] = useState(false);
   const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
 
-  // Cashfree in-app checkout modal state
-  const [checkoutSessionId, setCheckoutSessionId] = useState<string | null>(null);
-  const [checkoutOrderId, setCheckoutOrderId] = useState<string | null>(null);
-  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
-
-  const pendingOrderIdRef = useRef<string | null>(null);
-  pendingOrderIdRef.current = pendingOrderId;
-  const visibleRef = useRef<boolean>(visible);
-  visibleRef.current = visible;
-
   const selectedPlan =
     activePlans.find((p) => p.id === selectedPlanId) || activePlans[0];
 
@@ -145,57 +132,11 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
     [isVerifying, shopId, selectedPlanId, isLaunchOfferActive, selectedPlan.name, onPlanActivated, onClose, t]
   );
 
-  // 1. Listen for deep link redirects back to app: stylefleet://payment-callback?order_id=...
-  useEffect(() => {
-    const handleUrl = (event: { url: string }) => {
-      if (event.url && event.url.includes('payment-callback')) {
-        const urlStr = event.url;
-        let linkId = pendingOrderIdRef.current;
-        const match = urlStr.match(/[?&](?:order_id|link_id)=([^&]+)/);
-        if (match && match[1]) {
-          linkId = match[1];
-        }
-        if (linkId) {
-          verifyAndActivate(linkId);
-        }
-      }
-    };
-
-    const sub = Linking.addEventListener('url', handleUrl);
-
-    // Check if app was opened with initial URL
-    Linking.getInitialURL().then((initialUrl) => {
-      if (initialUrl && initialUrl.includes('payment-callback')) {
-        handleUrl({ url: initialUrl });
-      }
-    });
-
-    return () => {
-      sub.remove();
-    };
-  }, [verifyAndActivate]);
-
-  // 2. Listen for app returning to foreground (e.g. from UPI apps like PhonePe / GPay)
-  useEffect(() => {
-    const handleAppState = (nextState: AppStateStatus) => {
-      // Only while the plan screen is open: other screens (camera / photo picker) also send the app
-      // to the background and back, and must never trigger a payment check
-      if (nextState === 'active' && pendingOrderIdRef.current && visibleRef.current) {
-        // Automatically verify when returning to the app
-        verifyAndActivate(pendingOrderIdRef.current);
-      }
-    };
-
-    const sub = AppState.addEventListener('change', handleAppState);
-    return () => {
-      sub.remove();
-    };
-  }, [verifyAndActivate]);
-
   const handleProceedPayment = async () => {
+    if (isProcessing || isVerifying) return;
     setIsProcessing(true);
     try {
-      // 1. Create order via Cashfree Orders API
+      // 1. The server creates the order and decides the price
       const order = await subscriptionRepository.createPaymentOrder({
         shopId,
         planId: selectedPlanId,
@@ -204,29 +145,46 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
         isLaunchOffer: isLaunchOfferActive,
         registrationDateIso: resolvedRegDate || undefined,
       });
+      setPendingOrderId(order.orderId);
 
-      if (!order.paymentSessionId) {
-        throw new Error('Cashfree did not return a payment session. Please try again.');
+      // 2. Razorpay's own payment screen opens inside the app
+      try {
+        await RazorpayCheckout.open({
+          key: order.keyId,
+          order_id: order.orderId,
+          amount: order.amountPaise,
+          currency: order.currency,
+          name: 'StyleFleet',
+          description: `${selectedPlan.name} Premium`,
+          prefill: {
+            name: order.customer.name,
+            contact: order.customer.phone,
+            email: order.customer.email,
+          },
+          theme: { color: colors.accent },
+        });
+      } catch (checkoutError: any) {
+        // Razorpay code 2 means the owner closed the payment screen: nothing was paid
+        if (checkoutError?.code === 2) {
+          setPendingOrderId(null);
+          return;
+        }
+        Alert.alert(
+          'Payment Gateway Notice',
+          checkoutError?.description || 'The payment could not be completed. If money was deducted, tap "Verify & Activate".'
+        );
+        return;
       }
 
-      setPendingOrderId(order.orderId);
-      setCheckoutSessionId(order.paymentSessionId);
-      setCheckoutOrderId(order.orderId);
-      setShowCheckoutModal(true);
+      // 3. Paid on the phone: the server confirms it with Razorpay before the plan turns on
+      await verifyAndActivate(order.orderId);
     } catch (err: any) {
       Alert.alert(
         'Payment Gateway Notice',
-        err.message || 'Unable to connect to Cashfree payment gateway. Please check your internet connection and try again.'
+        err.message || 'Unable to connect to the payment gateway. Please check your internet connection and try again.'
       );
     } finally {
       setIsProcessing(false);
-    }
-  };
-
-  const handlePaymentFinished = async (orderId: string) => {
-    setShowCheckoutModal(false);
-    if (orderId) {
-      await verifyAndActivate(orderId);
     }
   };
 
@@ -300,10 +258,10 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
                   )}
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.pendingTitle, { color: colors.text }]}>
-                      Payment initiated in Cashfree
+                      Payment started
                     </Text>
                     <Text style={[styles.pendingSub, { color: colors.textMuted }]}>
-                      Completed your payment in the browser?
+                      Already paid? Tap to check and activate.
                     </Text>
                   </View>
                 </View>
@@ -513,7 +471,7 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
               {/* Cashfree Security Trust Badge */}
               <View style={styles.trustBadgeContainer}>
                 <Text style={[styles.trustBadgeText, { color: colors.textDim }]}>
-                  🔒 {t('securedByCashfree', '100% Secure Checkout powered by Cashfree Payments')}
+                  🔒 {t('securedByRazorpay', '100% Secure Checkout powered by Razorpay')}
                 </Text>
               </View>
             </View>
@@ -521,17 +479,6 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
         </View>
       </Modal>
 
-      {showCheckoutModal && !!checkoutSessionId && !!checkoutOrderId && (
-        <CashfreeCheckoutModal
-          visible={showCheckoutModal}
-          onClose={() => setShowCheckoutModal(false)}
-          paymentSessionId={checkoutSessionId}
-          orderId={checkoutOrderId}
-          planName={selectedPlan.name}
-          amount={selectedPlan.priceInRupees}
-          onPaymentFinished={handlePaymentFinished}
-        />
-      )}
     </>
   );
 };
