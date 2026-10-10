@@ -15,15 +15,23 @@ const STORAGE_KEY_REG_DATE = '@salon_os_reg_date_';
 const STORAGE_KEY_ACTIVE_PLAN = '@salon_os_active_plan_';
 
 export const CASHFREE_ENV = (process.env.EXPO_PUBLIC_CASHFREE_ENV || 'SANDBOX').toUpperCase();
-export const CASHFREE_APP_ID =
-  process.env.EXPO_PUBLIC_CASHFREE_APP_ID || 'TEST11202135775d9d52e3d0cc19114353120211';
-export const CASHFREE_SECRET_KEY =
-  process.env.EXPO_PUBLIC_CASHFREE_SECRET_KEY || '';
+// The Cashfree secret key never ships in the app: every Cashfree call goes through the
+// `cashfree-service` Supabase Edge Function, which holds the key as a server secret.
 
-export const CASHFREE_BASE_URL =
-  CASHFREE_ENV === 'PRODUCTION'
-    ? 'https://api.cashfree.com/pg'
-    : 'https://sandbox.cashfree.com/pg';
+/** The reason the payment server gave when it refused a request (its answer comes back inside the error). */
+async function serverReason(error: unknown): Promise<string | null> {
+  try {
+    const response = (error as { context?: { json?: () => Promise<unknown> } } | null)?.context;
+    if (response && typeof response.json === 'function') {
+      const body = (await response.json()) as { error?: unknown; message?: unknown } | null;
+      if (typeof body?.error === 'string' && body.error) return body.error;
+      if (typeof body?.message === 'string' && body.message) return body.message;
+    }
+  } catch {
+    // the answer was not readable: the caller shows its own wording
+  }
+  return null;
+}
 
 export interface SubscriptionInfo {
   type: 'trial' | 'subscription';
@@ -60,16 +68,10 @@ export class SubscriptionRepository {
     try {
       if (!orderId || orderId.startsWith('test_')) return false;
 
-      const headers = {
-        'x-api-version': '2023-08-01',
-        'x-client-id': CASHFREE_APP_ID,
-        'x-client-secret': CASHFREE_SECRET_KEY,
-      };
-
-      const res = await fetch(`${CASHFREE_BASE_URL}/orders/${orderId}`, { headers });
-      if (!res.ok) return false;
-      const data = await res.json();
-      return data.order_status === 'PAID';
+      const { data, error } = await supabase.functions.invoke('cashfree-service', {
+        body: { action: 'check-order', orderId },
+      });
+      return !error && data?.paid === true;
     } catch {
       return false;
     }
@@ -264,14 +266,15 @@ export class SubscriptionRepository {
     const cleanPhone = (params.customerPhone || '9999999999').replace(/\D/g, '').slice(-10);
     const safeLinkId = `sf_link_${(params.shopId || 'shop').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}_${Date.now()}`;
 
-    // 1. Try invoking Supabase Edge Function first
-    try {
+    // The order is created on the server, which holds the Cashfree secret
+    {
       const { data, error } = await supabase.functions.invoke('cashfree-service', {
         body: {
           action: 'create-order',
           shopId: params.shopId,
           planId: params.planId,
-          amount: plan.priceInRupees,
+          // The server decides the price; this is only what the owner saw, so a mismatch is reported
+          expectedAmount: plan.priceInRupees,
           customerName: params.customerName || 'Salon Owner',
           customerPhone: cleanPhone,
           customerEmail: params.customerEmail || 'owner@stylefleet.app',
@@ -284,62 +287,16 @@ export class SubscriptionRepository {
           paymentLinkUrl: data.paymentLinkUrl,
           orderId: data.orderId || safeLinkId,
           cfOrderId: data.cfOrderId,
-          isSandbox: false,
+          isSandbox: CASHFREE_ENV !== 'PRODUCTION',
         };
       }
-    } catch {
-      // Edge Function not deployed yet, use direct Cashfree Sandbox link
+
+      throw new Error(
+        (data && typeof data.error === 'string' && data.error) ||
+          (await serverReason(error)) ||
+          'Unable to start the payment. Please check your internet connection and try again.'
+      );
     }
-
-    // 2. Direct Cashfree Production & Sandbox API Fallback
-    const headers = {
-      'x-api-version': '2023-08-01',
-      'x-client-id': CASHFREE_APP_ID,
-      'x-client-secret': CASHFREE_SECRET_KEY,
-      'Content-Type': 'application/json',
-    };
-
-    const safeOrderId = `sf_ord_${(params.shopId || 'shop').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}_${Date.now()}`;
-
-    const orderPayload = {
-      order_id: safeOrderId,
-      order_amount: plan.priceInRupees,
-      order_currency: 'INR',
-      customer_details: {
-        customer_id: `cust_${(params.shopId || 'owner').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
-        customer_name: params.customerName || 'Salon Owner',
-        customer_phone: cleanPhone || '9999999999',
-        customer_email: params.customerEmail || 'owner@stylefleet.app',
-      },
-      order_meta: {
-        return_url: `stylefleet://payment-callback?order_id=${safeOrderId}`,
-      },
-      order_note: `StyleFleet ${plan.name} Subscription`,
-    };
-
-    const res = await fetch(`${CASHFREE_BASE_URL}/orders`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(orderPayload),
-    });
-
-    const resData = await res.json();
-    if (resData.payment_session_id) {
-      const checkoutUrl =
-        CASHFREE_ENV === 'PRODUCTION'
-          ? `https://payments.cashfree.com/order/#${resData.payment_session_id}`
-          : `https://payments-test.cashfree.com/order/#${resData.payment_session_id}`;
-
-      return {
-        paymentSessionId: resData.payment_session_id,
-        paymentLinkUrl: checkoutUrl,
-        orderId: safeOrderId,
-        cfOrderId: resData.cf_order_id?.toString(),
-        isSandbox: CASHFREE_ENV !== 'PRODUCTION',
-      };
-    }
-
-    throw new Error(resData.message || 'Unable to initialize Cashfree payment. Please verify internet connection.');
   }
 
   /**
@@ -352,7 +309,7 @@ export class SubscriptionRepository {
     /** Whether the salon paid the launch-offer price (used only if the gateway does not report the amount) */
     isLaunchOffer?: boolean;
   }): Promise<{ success: boolean; message: string }> {
-    // 1. Try Edge function first
+    // The payment is checked on the server, which holds the Cashfree secret
     try {
       const { data, error } = await supabase.functions.invoke('cashfree-service', {
         body: {
@@ -372,70 +329,30 @@ export class SubscriptionRepository {
           orderId: params.orderId,
           isLaunchOffer: params.isLaunchOffer,
           amountMinor: Number.isFinite(paidMinor) && paidMinor > 0 ? paidMinor : undefined,
+          serverRecorded: true,
         });
         return {
           success: true,
           message: data.message || 'Payment verified and plan activated!',
         };
       }
-    } catch {
-      // Fallback
-    }
 
-    // 2. Direct Cashfree Order / Link Verification
-    try {
-      const headers = {
-        'x-api-version': '2023-08-01',
-        'x-client-id': CASHFREE_APP_ID,
-        'x-client-secret': CASHFREE_SECRET_KEY,
-      };
-
-      // Check /orders first
-      let res = await fetch(`${CASHFREE_BASE_URL}/orders/${params.orderId}`, {
-        headers,
-      });
-
-      let orderData = await res.json();
-
-      // If not in orders, check /links
-      if (res.status === 404 || !orderData.order_status) {
-        const linkRes = await fetch(`${CASHFREE_BASE_URL}/links/${params.orderId}`, { headers });
-        if (linkRes.ok) {
-          orderData = await linkRes.json();
-          orderData.order_status = orderData.link_status;
-        }
-      }
-
-      // STRICT VERIFICATION: ONLY order_status === 'PAID' or link_status === 'PAID'
-      // NEVER count 'ACTIVE', 'PENDING' or sandbox status as paid!
-      const isPaid = orderData.order_status === 'PAID' || orderData.link_status === 'PAID';
-
-      if (isPaid) {
-        const paidMinor = Math.round(Number(orderData.order_amount) * 100);
-        await this.recordSubscription({
-          shopId: params.shopId,
-          userId: '',
-          planId: params.planId,
-          orderId: params.orderId,
-          paymentId: (orderData.cf_order_id || orderData.cf_link_id)?.toString(),
-          isLaunchOffer: params.isLaunchOffer,
-          amountMinor: Number.isFinite(paidMinor) && paidMinor > 0 ? paidMinor : undefined,
-        });
-
+      if (!error && data) {
         return {
-          success: true,
-          message: 'Payment verified and plan activated!',
+          success: false,
+          message: `Order status: ${data.status || 'PENDING'}. Please complete payment.`,
         };
       }
-
       return {
         success: false,
-        message: `Order status: ${orderData.order_status || orderData.link_status || 'PENDING'}. Please complete payment.`,
+        message:
+          (await serverReason(error)) ||
+          'Could not verify payment. Please check your internet connection and try again.',
       };
     } catch (err: any) {
       return {
         success: false,
-        message: err.message || 'Could not verify payment',
+        message: err?.message || 'Could not verify payment',
       };
     }
   }
@@ -452,6 +369,8 @@ export class SubscriptionRepository {
     /** What the gateway says was actually paid, in paise. Wins over the plan's list price. */
     amountMinor?: number;
     isLaunchOffer?: boolean;
+    /** The payment server already saved the subscription, so do not add a second row for the same payment. */
+    serverRecorded?: boolean;
   }): Promise<SubscriptionRecord | null> {
     const plan = getPlanById(params.planId, params.isLaunchOffer ?? false);
     if (!plan) throw new Error('Invalid plan');
@@ -489,7 +408,8 @@ export class SubscriptionRepository {
       // Ignore
     }
 
-    // 2. Persist to Supabase subscriptions table
+    // 2. Persist to Supabase subscriptions table (skipped when the payment server already saved this payment)
+    if (params.serverRecorded) return recordData;
     try {
       await supabase.from('subscriptions').insert({
         shop_id: recordData.shop_id,
