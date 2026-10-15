@@ -1275,6 +1275,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
         {reportView === 'summary' ? (
           <SalesSummaryView
             bills={bills}
+            expenses={expenses}
             shopName={shopName}
             isDownloadLocked={isReportDownloadLocked}
             onUpgradePlan={onUpgradePlan}

@@ -72,6 +72,7 @@ interface HomeScreenProps {
   onOpenInvoice: (bill: Bill) => void;
   /** The logged-in stylist's id (stylist sessions only): "Book again" books for them. */
   preferredStaffId?: string | null;
+  isStylist?: boolean;
 }
 
 // Text colour on the gold and green buttons (dark on bright, for contrast)
@@ -129,6 +130,7 @@ export const HomeScreen = ({
   onNavigateProfile,
   onOpenInvoice,
   preferredStaffId = null,
+  isStylist = false,
 }: HomeScreenProps) => {
   const pullRefresh = usePullRefresh(onRefresh);
   const { colors, setThemeMode } = useTheme();
@@ -178,10 +180,12 @@ export const HomeScreen = ({
     onConfirm: onQuickConfirm,
   });
 
+  const activePeriod = isStylist ? 'Day' : period;
+
   const periodLabel =
-    period === 'Day'
+    activePeriod === 'Day'
       ? t('today', 'Today')
-      : period === 'Week'
+      : activePeriod === 'Week'
       ? t('thisWeek', 'This week')
       : t('thisMonth', 'This month');
 
@@ -217,13 +221,28 @@ export const HomeScreen = ({
 
   // Filter active bills for sales metrics & recent bills
   const activeBills = useMemo(() => {
-    return bills.filter((b) => b && b.status !== 'deleted');
-  }, [bills]);
+    return bills.filter((b) => {
+      if (!b || b.status === 'deleted') return false;
+      if (isStylist) {
+        const dateStr = b.issued_at || b.created_at;
+        if (!dateStr) return false;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return false;
+        const today = new Date();
+        return (
+          d.getFullYear() === today.getFullYear() &&
+          d.getMonth() === today.getMonth() &&
+          d.getDate() === today.getDate()
+        );
+      }
+      return true;
+    });
+  }, [bills, isStylist]);
 
   // Sales metrics for histogram
   const metrics = useMemo(() => {
-    return financialService.getSalesMetrics(period, activeBills);
-  }, [period, activeBills]);
+    return financialService.getSalesMetrics(activePeriod, activeBills);
+  }, [activePeriod, activeBills]);
 
   const deltaPct =
     metrics.prev_minor > 0
@@ -232,7 +251,7 @@ export const HomeScreen = ({
   const isUp = metrics.total_minor >= metrics.prev_minor;
   const deltaLabel =
     metrics.prev_minor > 0
-      ? `${isUp ? '▲ ' : '▼ '}${deltaPct}% ${t('vsLast', 'vs last')} ${t(period.toLowerCase(), period)}`
+      ? `${isUp ? '▲ ' : '▼ '}${deltaPct}% ${t('vsLast', 'vs last')} ${t(activePeriod.toLowerCase(), activePeriod)}`
       : '0% change';
 
   // Recent bills sorted latest first
@@ -395,25 +414,27 @@ export const HomeScreen = ({
         showsVerticalScrollIndicator={false}
       >
         {/* SUMMARY: period switch + four figures */}
-        <View style={[styles.periodRow, glass.inset]}>
-          {(['Day', 'Week', 'Month'] as const).map((p) => {
-            const isSelected = period === p;
-            return (
-              <TouchableOpacity
-                key={p}
-                activeOpacity={0.8}
-                onPress={() => setPeriod(p)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: isSelected }}
-                style={[styles.periodBtn, isSelected && { backgroundColor: colors.accent }]}
-              >
-                <Text style={[styles.periodBtnText, { color: isSelected ? ON_ACCENT : colors.textMuted }]}>
-                  {p === 'Day' ? t('today', 'Today') : t(p.toLowerCase(), p)}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        {!isStylist && (
+          <View style={[styles.periodRow, glass.inset]}>
+            {(['Day', 'Week', 'Month'] as const).map((p) => {
+              const isSelected = period === p;
+              return (
+                <TouchableOpacity
+                  key={p}
+                  activeOpacity={0.8}
+                  onPress={() => setPeriod(p)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  style={[styles.periodBtn, isSelected && { backgroundColor: colors.accent }]}
+                >
+                  <Text style={[styles.periodBtnText, { color: isSelected ? ON_ACCENT : colors.textMuted }]}>
+                    {p === 'Day' ? t('today', 'Today') : t(p.toLowerCase(), p)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
 
         <View style={styles.metricsGrid}>
           <TouchableOpacity
@@ -636,7 +657,7 @@ export const HomeScreen = ({
           style={[styles.collapseHead, glass.raised]}
         >
           <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            {t('recentBills', 'Recent Bills')}
+            {isStylist ? t('todayBills', "Today's Bills") : t('recentBills', 'Recent Bills')}
           </Text>
           <View style={styles.collapseRight}>
             {recentBills.length > 0 && (

@@ -1,4 +1,4 @@
-import { SummaryMonthDetail } from './salesSummary';
+import { SummaryMonthDetail, dateKeyOf } from './salesSummary';
 import { inrFromMinor } from './format';
 
 export interface MonthExportMeta {
@@ -41,9 +41,33 @@ export function buildMonthCsv(detail: SummaryMonthDetail, meta: MonthExportMeta)
       );
     }
   }
+
+  if (detail.expenses && detail.expenses.length > 0) {
+    rows.push('');
+    rows.push(`"EXPENSES BREAKDOWN"`);
+    rows.push(`"Date","Category","Note","Amount (INR)"`);
+    for (const ex of detail.expenses) {
+      const d = dateKeyOf(ex.time);
+      rows.push(
+        [
+          csvText(dayText(d)),
+          csvText(ex.categoryName || 'General'),
+          csvText(ex.note || '-'),
+          `"${(ex.amountMinor / 100).toFixed(2)}"`,
+        ].join(',')
+      );
+    }
+  }
+
   rows.push('');
   rows.push(`"Total Bills","${detail.totals.billsCount}"`);
   rows.push(`"Total Sales (INR)","${(detail.totals.salesMinor / 100).toFixed(2)}"`);
+  if (detail.totals.expensesMinor !== undefined) {
+    rows.push(`"Total Expenses (INR)","${(detail.totals.expensesMinor / 100).toFixed(2)}"`);
+    const netProfit = detail.totals.netProfitMinor ?? (detail.totals.salesMinor - detail.totals.expensesMinor);
+    rows.push(`"Net Profit (INR)","${(netProfit / 100).toFixed(2)}"`);
+    rows.push(`"Profit Margin","${detail.totals.marginPct ?? 0}%"`);
+  }
   return rows.join('\n');
 }
 
@@ -73,35 +97,97 @@ export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta
     )
     .join('\n');
 
+  const hasExpenses = detail.expenses && detail.expenses.length > 0;
+  const expensesBlock = hasExpenses
+    ? `
+  <div class="section-title" style="margin-top: 24px; font-weight: 800; font-size: 14px; border-bottom: 2px solid #EF4444; padding-bottom: 6px;">
+    Expenses Breakdown (${detail.expenses!.length} ${detail.expenses!.length === 1 ? 'entry' : 'entries'} &middot; Total ${esc(inrFromMinor(detail.totals.expensesMinor || 0))})
+  </div>
+  <table>
+    <thead>
+      <tr style="background: #F9FAFB; font-weight: 700; color: #4B5563;">
+        <td>Date</td>
+        <td>Category</td>
+        <td>Note</td>
+        <td style="text-align: right;">Amount</td>
+      </tr>
+    </thead>
+    <tbody>
+      ${detail.expenses!
+        .map(
+          (ex) => `<tr>
+        <td style="width: 25%; font-size: 11.5px; color: #6B7280;">${esc(dayText(dateKeyOf(ex.time)))}</td>
+        <td style="font-weight: 600;">${esc(ex.categoryName || 'General')}</td>
+        <td style="color: #6B7280;">${esc(ex.note || '-')}</td>
+        <td class="num" style="color: #EF4444;">${esc(inrFromMinor(ex.amountMinor))}</td>
+      </tr>`
+        )
+        .join('\n      ')}
+    </tbody>
+  </table>`
+    : '';
+
+  const netProfit = detail.totals.netProfitMinor ?? (detail.totals.salesMinor - (detail.totals.expensesMinor || 0));
+  const hasExpenseData = detail.totals.expensesMinor !== undefined;
+
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Sales Summary - ${esc(meta.monthLabel)}</title>
+  <title>Sales & Financial Summary - ${esc(meta.monthLabel)}</title>
   <style>
     body { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 28px; color: #111827; }
     .header { border-bottom: 2px solid #D4AF37; padding-bottom: 12px; margin-bottom: 18px; }
     h1 { margin: 0; font-size: 22px; }
     .sub { color: #6B7280; font-size: 12px; margin-top: 4px; }
+    .kpi-row { display: flex; gap: 12px; margin-bottom: 18px; }
+    .kpi-card { flex: 1; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 14px; }
+    .kpi-card.highlight { background: #FFFBEB; border-color: #FDE68A; }
+    .kpi-label { font-size: 10.5px; font-weight: 800; color: #6B7280; text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi-val { font-size: 18px; font-weight: 800; margin-top: 2px; }
+    .kpi-sub { font-size: 11px; color: #9CA3AF; margin-top: 1px; }
     .day { background: #F3F4F6; padding: 8px 10px; margin-top: 14px; font-weight: 700; font-size: 13px; display: flex; justify-content: space-between; }
     .day-total { font-weight: 600; color: #374151; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     td { padding: 7px 10px; border-bottom: 1px solid #E5E7EB; vertical-align: top; }
     td.cust { font-weight: 600; width: 28%; }
     td.num { text-align: right; font-weight: 700; white-space: nowrap; }
-    .total { margin-top: 18px; border-top: 2px solid #111827; padding-top: 10px; display: flex; justify-content: space-between; font-size: 14px; font-weight: 800; }
+    .total { margin-top: 20px; border-top: 2px solid #111827; padding-top: 12px; display: flex; justify-content: space-between; font-size: 14px; font-weight: 800; }
     .footer { margin-top: 24px; font-size: 11px; color: #9CA3AF; text-align: center; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>${esc(meta.shopName)}</h1>
-    <div class="sub">Sales Summary &middot; ${esc(meta.monthLabel)}</div>
+    <div class="sub">Financial & Sales Summary &middot; ${esc(meta.monthLabel)}</div>
   </div>
+
+  ${hasExpenseData ? `
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">TOTAL SALES</div>
+      <div class="kpi-val">${esc(inrFromMinor(detail.totals.salesMinor))}</div>
+      <div class="kpi-sub">${detail.totals.billsCount} ${detail.totals.billsCount === 1 ? 'bill' : 'bills'}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">TOTAL EXPENSES</div>
+      <div class="kpi-val" style="color: #EF4444;">${esc(inrFromMinor(detail.totals.expensesMinor || 0))}</div>
+      <div class="kpi-sub">${detail.totals.expensesCount || 0} entries</div>
+    </div>
+    <div class="kpi-card highlight">
+      <div class="kpi-label">NET PROFIT</div>
+      <div class="kpi-val" style="color: ${netProfit >= 0 ? '#10B981' : '#EF4444'};">${esc(inrFromMinor(netProfit))}</div>
+      <div class="kpi-sub">${detail.totals.marginPct ?? 0}% Margin</div>
+    </div>
+  </div>
+  ` : ''}
+
   ${dayBlocks || '<p>No sales recorded in this month.</p>'}
+  ${expensesBlock}
+
   <div class="total">
-    <span>${detail.totals.billsCount} ${detail.totals.billsCount === 1 ? 'bill' : 'bills'}</span>
-    <span>Total ${esc(inrFromMinor(detail.totals.salesMinor))}</span>
+    <span>${detail.totals.billsCount} ${detail.totals.billsCount === 1 ? 'bill' : 'bills'}${hasExpenseData ? ` &middot; Net Profit: ${esc(inrFromMinor(netProfit))} (${detail.totals.marginPct ?? 0}%)` : ''}</span>
+    <span>Total Sales: ${esc(inrFromMinor(detail.totals.salesMinor))}</span>
   </div>
   <div class="footer">Generated by StyleFleet &middot; ${esc(meta.generatedOn)}</div>
 </body>

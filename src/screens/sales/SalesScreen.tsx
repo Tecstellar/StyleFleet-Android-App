@@ -12,7 +12,7 @@ import { useLanguage } from '../../i18n/LanguageContext';
 import { Period, Bill } from '../../types/domain';
 import { financialService } from '../../services/financialService';
 import { inrFromMinor, shortInrFromMinor } from '../../utils/format';
-import { PlusIcon } from '../../components/common/SvgIcons';
+import { PlusIcon, ChevronDownIcon } from '../../components/common/SvgIcons';
 import { radii, shadows } from '../../theme/spacing';
 import { GlassBackdrop } from '../../components/common/GlassBackdrop';
 import { fmt, localeFor } from '../../i18n/format';
@@ -26,6 +26,7 @@ interface SalesScreenProps {
   onOpenInvoice: (bill: Bill) => void;
   onNewBill: () => void;
   onRestoreBill?: (billId: string) => Promise<void>;
+  isStylist?: boolean;
 }
 
 export const SalesScreen = ({
@@ -35,6 +36,7 @@ export const SalesScreen = ({
   onOpenInvoice,
   onNewBill,
   onRestoreBill,
+  isStylist = false,
 }: SalesScreenProps) => {
   const pullRefresh = usePullRefresh(onRefresh);
   const { colors } = useTheme();
@@ -45,6 +47,29 @@ export const SalesScreen = ({
   const locale = localeFor(language);
   const [period, setPeriod] = useState<Period>('Day');
   const [activeTabSub, setActiveTabSub] = useState<'active' | 'deleted'>('active');
+  const [showYesterdayDropdown, setShowYesterdayDropdown] = useState(false);
+
+  // Helper to check if bill belongs to today's local calendar date
+  const isTodayBill = (b: Bill): boolean => {
+    const dateStr = b.issued_at || b.created_at;
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return false;
+    const today = new Date();
+    return (
+      d.getFullYear() === today.getFullYear() &&
+      d.getMonth() === today.getMonth() &&
+      d.getDate() === today.getDate()
+    );
+  };
+
+  // Stylists only see today's sales; owners see full history
+  const visibleBills = React.useMemo(() => {
+    if (isStylist) {
+      return bills.filter(isTodayBill);
+    }
+    return bills;
+  }, [bills, isStylist]);
 
   // Separate active bills vs recently deleted bills (30 days)
   const { activeBills, deletedBills } = React.useMemo(() => {
@@ -54,7 +79,7 @@ export const SalesScreen = ({
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    for (const b of bills) {
+    for (const b of visibleBills) {
       if (!b) continue;
       if (b.id && seen.has(b.id)) continue;
       if (b.invoice_number && seen.has(b.invoice_number)) continue;
@@ -77,30 +102,110 @@ export const SalesScreen = ({
       }
     }
     return { activeBills: active, deletedBills: deleted };
-  }, [bills]);
+  }, [visibleBills]);
 
-  const metrics = financialService.getSalesMetrics(period, activeBills);
+  // Lock period to Day for stylists
+  const activePeriod = isStylist ? 'Day' : period;
+  const metrics = financialService.getSalesMetrics(activePeriod, activeBills);
   const deltaPct =
     metrics.prev_minor > 0
       ? Math.round((Math.abs(metrics.total_minor - metrics.prev_minor) / metrics.prev_minor) * 100)
       : 0;
   const isUp = metrics.total_minor >= metrics.prev_minor;
   const deltaLabel = metrics.prev_minor > 0
-    ? `${isUp ? '▲ ' : '▼ '}${deltaPct}% ${t('vsLast', 'vs last')} ${t(period.toLowerCase(), period)}`
+    ? `${isUp ? '▲ ' : '▼ '}${deltaPct}% ${t('vsLast', 'vs last')} ${t(activePeriod.toLowerCase(), activePeriod)}`
     : t('slNoChange', '0% change');
 
+  // Yesterday's collected revenue & payment mode breakdown
+  const yesterdayMetrics = React.useMemo(() => {
+    const today = new Date();
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const yesterdayStart = todayStart - 24 * 60 * 60 * 1000;
+    const yesterdayEnd = todayStart - 1;
+
+    // Use full bills array to compute yesterday metrics (for owner view)
+    const yBills = bills.filter((b) => {
+      if (!b || b.status === 'deleted') return false;
+      const dateStr = b.issued_at || b.created_at;
+      if (!dateStr) return false;
+      const t = new Date(dateStr).getTime();
+      return !isNaN(t) && t >= yesterdayStart && t <= yesterdayEnd;
+    });
+
+    const paymentTotals: Record<string, number> = { UPI: 0, Cash: 0, Card: 0 };
+    let totalMinor = 0;
+
+    for (const b of yBills) {
+      if (b.status === 'pending') continue;
+      const collected =
+        b.status === 'partially_paid'
+          ? (typeof b.paid_amount_minor === 'number' ? b.paid_amount_minor : (b.total_minor || 0))
+          : (b.total_minor || 0);
+
+      if (collected <= 0) continue;
+
+      if (b.payments && b.payments.length > 0) {
+        const sumPayments = b.payments.reduce((acc, p) => acc + (p.amount_minor || 0), 0);
+        for (const p of b.payments) {
+          const effectiveAmount =
+            sumPayments > 0 && sumPayments !== collected
+              ? Math.round(((p.amount_minor || 0) / sumPayments) * collected)
+              : (p.amount_minor || 0);
+
+          if (effectiveAmount > 0) {
+            const raw = (p.method || b.payment_method || 'UPI').trim();
+            const mode = /cash/i.test(raw) ? 'Cash' : /card/i.test(raw) ? 'Card' : 'UPI';
+            paymentTotals[mode] = (paymentTotals[mode] || 0) + effectiveAmount;
+            totalMinor += effectiveAmount;
+          }
+        }
+      } else {
+        const raw = (b.payment_method || 'UPI').trim();
+        const mode = /cash/i.test(raw) ? 'Cash' : /card/i.test(raw) ? 'Card' : 'UPI';
+        paymentTotals[mode] = (paymentTotals[mode] || 0) + collected;
+        totalMinor += collected;
+      }
+    }
+
+    return {
+      total_minor: totalMinor,
+      bills_count: yBills.length,
+      modes: [
+        {
+          label: 'UPI',
+          amt_minor: paymentTotals['UPI'] || 0,
+          pct: totalMinor > 0 ? Math.round(((paymentTotals['UPI'] || 0) / totalMinor) * 100) : 0,
+        },
+        {
+          label: 'Cash',
+          amt_minor: paymentTotals['Cash'] || 0,
+          pct: totalMinor > 0 ? Math.round(((paymentTotals['Cash'] || 0) / totalMinor) * 100) : 0,
+        },
+        {
+          label: 'Card',
+          amt_minor: paymentTotals['Card'] || 0,
+          pct: totalMinor > 0 ? Math.round(((paymentTotals['Card'] || 0) / totalMinor) * 100) : 0,
+        },
+      ],
+    };
+  }, [bills]);
+
   const now = new Date();
-  const subLabelText =
-    period === 'Day'
-      ? tf('slSubDay', '{today} ({date}) vs yesterday', {
-          today: t('today', 'Today'),
-          date: now.toLocaleDateString(locale, { day: 'numeric', month: 'short' }),
-        })
-      : period === 'Week'
-      ? t('slSubWeek', 'Last 7 days (including Today) vs prior week')
-      : tf('slSubMonth', '{month} (up to Today) vs last month', {
-          month: now.toLocaleString(locale, { month: 'long' }),
-        });
+  const subLabelText = isStylist
+    ? tf('slSubStylistToday', "{today} ({date}) sales", {
+        today: t('today', 'Today'),
+        date: now.toLocaleDateString(locale, { day: 'numeric', month: 'short' }),
+      })
+    : activePeriod === 'Day'
+    ? tf('slSubDay', '{today} ({date}) vs yesterday', {
+        today: t('today', 'Today'),
+        date: now.toLocaleDateString(locale, { day: 'numeric', month: 'short' }),
+      })
+    : activePeriod === 'Week'
+    ? t('slSubWeek', 'Last 7 days (including Today) vs prior week')
+    : tf('slSubMonth', '{month} (up to Today) vs last month', {
+        month: now.toLocaleString(locale, { month: 'long' }),
+      });
   const barLabel = (label: string): string => {
     const wk = label.match(/^W(\d+) \(Now\)$/);
     if (wk) return tf('slWeekNow', 'W{n} (Now)', { n: wk[1] });
@@ -158,37 +263,39 @@ export const SalesScreen = ({
           </Text>
         </View>
 
-        {/* Period Selector Tabs */}
-        <View style={[styles.periodTabsRow, { borderColor: glass.card.borderColor, backgroundColor: glass.card.backgroundColor }]}>
-          {(['Day', 'Week', 'Month'] as const).map((p) => {
-            const isSelected = period === p;
-            return (
-              <TouchableOpacity
-                key={p}
-                activeOpacity={0.8}
-                onPress={() => setPeriod(p)}
-                style={[
-                  styles.periodTab,
-                  {
-                    backgroundColor: isSelected ? colors.accent : 'transparent',
-                  },
-                ]}
-              >
-                <Text
+        {/* Period Selector Tabs - hidden for stylists */}
+        {!isStylist && (
+          <View style={[styles.periodTabsRow, { borderColor: glass.card.borderColor, backgroundColor: glass.card.backgroundColor }]}>
+            {(['Day', 'Week', 'Month'] as const).map((p) => {
+              const isSelected = period === p;
+              return (
+                <TouchableOpacity
+                  key={p}
+                  activeOpacity={0.8}
+                  onPress={() => setPeriod(p)}
                   style={[
-                    styles.periodTabText,
+                    styles.periodTab,
                     {
-                      color: isSelected ? '#161826' : colors.textMuted,
-                      fontWeight: isSelected ? '700' : '500',
+                      backgroundColor: isSelected ? colors.accent : 'transparent',
                     },
                   ]}
                 >
-                  {p === 'Day' ? t('today', 'Today') : t(p.toLowerCase(), p)}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+                  <Text
+                    style={[
+                      styles.periodTabText,
+                      {
+                        color: isSelected ? '#161826' : colors.textMuted,
+                        fontWeight: isSelected ? '700' : '500',
+                      },
+                    ]}
+                  >
+                    {p === 'Day' ? t('today', 'Today') : t(p.toLowerCase(), p)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={pullRefresh}>
@@ -212,9 +319,62 @@ export const SalesScreen = ({
             </Text>
           </View>
         </View>
-        <Text style={[styles.subLabel, { color: colors.textDim }]}>
-          {subLabelText}
-        </Text>
+
+        <View style={styles.subLabelRow}>
+          <Text style={[styles.subLabel, { color: colors.textDim }]}>
+            {subLabelText}
+          </Text>
+          {!isStylist && activePeriod === 'Day' && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => setShowYesterdayDropdown((prev) => !prev)}
+              style={styles.dropdownArrowBtn}
+              accessibilityLabel={t('toggleYesterdayCollected', 'Toggle yesterday collected breakdown')}
+            >
+              <View style={{ transform: [{ rotate: showYesterdayDropdown ? '180deg' : '0deg' }] }}>
+                <ChevronDownIcon size={16} color={colors.accent} strokeWidth={2.4} />
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Yesterday Breakdown Accordion */}
+        {showYesterdayDropdown && !isStylist && activePeriod === 'Day' && (
+          <View style={[styles.yesterdayAccordionCard, { backgroundColor: colors.isDark ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.7)', borderColor: glass.card.borderColor }]}>
+            <View style={styles.yesterdayAccordionHeader}>
+              <View>
+                <Text style={[styles.yesterdayTitle, { color: colors.accent }]}>
+                  {t('slYesterdayCollected', 'Yesterday Collected via UPI, Cash & Card')}
+                </Text>
+                <Text style={[styles.yesterdaySubtitle, { color: colors.textDim }]}>
+                  {tf('slYesterdaySummary', '{count} bills · Total {total}', {
+                    count: yesterdayMetrics.bills_count,
+                    total: inrFromMinor(yesterdayMetrics.total_minor),
+                  })}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ marginTop: 8 }}>
+              {yesterdayMetrics.modes.map((m, idx) => (
+                <View key={idx} style={styles.modeRow}>
+                  <Text style={[styles.modeLabel, { color: colors.text }]}>{modeLabel(m.label)}</Text>
+                  <View style={[styles.modeProgressBar, { backgroundColor: colors.trackBg }]}>
+                    <View
+                      style={[
+                        styles.modeProgressFill,
+                        { width: `${m.pct}%`, backgroundColor: colors.accent },
+                      ]}
+                    />
+                  </View>
+                  <Text style={[styles.modeAmount, { color: colors.textMuted }]}>
+                    {shortInrFromMinor(m.amt_minor)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* Bar Chart */}
         <View style={styles.chartContainer}>
@@ -257,10 +417,26 @@ export const SalesScreen = ({
         <View style={styles.metricsGrid}>
           {/* Collected via */}
           <View style={[styles.metricCard, { backgroundColor: glass.card.backgroundColor, borderColor: glass.card.borderColor }]}>
-            <Text style={[styles.metricCardLabel, { color: colors.textDim }]}>
-              {t('slCollectedVia', 'COLLECTED VIA')}
-            </Text>
-            {metrics.modes.map((m, idx) => (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <Text style={[styles.metricCardLabel, { color: colors.textDim }]}>
+                {t('slCollectedVia', 'COLLECTED VIA')}
+              </Text>
+              {!isStylist && activePeriod === 'Day' && (
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => setShowYesterdayDropdown((prev) => !prev)}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 2, paddingHorizontal: 6, borderRadius: radii.pill, backgroundColor: showYesterdayDropdown ? colors.accent + '22' : 'transparent', borderWidth: 1, borderColor: showYesterdayDropdown ? colors.accent : colors.divider }}
+                >
+                  <Text style={{ fontSize: 10, fontWeight: '600', color: showYesterdayDropdown ? colors.accent : colors.textDim }}>
+                    {showYesterdayDropdown ? t('yesterday', 'Yesterday') : t('today', 'Today')}
+                  </Text>
+                  <View style={{ transform: [{ rotate: showYesterdayDropdown ? '180deg' : '0deg' }] }}>
+                    <ChevronDownIcon size={12} color={showYesterdayDropdown ? colors.accent : colors.textDim} strokeWidth={2.4} />
+                  </View>
+                </TouchableOpacity>
+              )}
+            </View>
+            {(showYesterdayDropdown ? yesterdayMetrics.modes : metrics.modes).map((m, idx) => (
               <View key={idx} style={styles.modeRow}>
                 <Text style={[styles.modeLabel, { color: colors.text }]}>{modeLabel(m.label)}</Text>
                 <View
@@ -327,11 +503,13 @@ export const SalesScreen = ({
               }}
             >
               <Text style={{ color: activeTabSub === 'active' ? colors.accent : colors.textDim, fontWeight: '600', fontSize: 13 }}>
-                {tf('slRecentBills', 'Recent Bills ({n})', { n: activeBills.length })}
+                {isStylist
+                  ? tf('slTodayBillsCount', "Today's Bills ({n})", { n: activeBills.length })
+                  : tf('slRecentBills', 'Recent Bills ({n})', { n: activeBills.length })}
               </Text>
             </TouchableOpacity>
 
-            {deletedBills.length > 0 && (
+            {!isStylist && deletedBills.length > 0 && (
               <TouchableOpacity
                 onPress={() => setActiveTabSub('deleted')}
                 activeOpacity={0.8}
@@ -619,9 +797,39 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     fontWeight: '600',
   },
+  subLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  dropdownArrowBtn: {
+    padding: 3,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  yesterdayAccordionCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  yesterdayAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  yesterdayTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  yesterdaySubtitle: {
+    fontSize: 11,
+    marginTop: 2,
+  },
   subLabel: {
     fontSize: 12,
-    marginTop: 4,
   },
   chartContainer: {
     flexDirection: 'row',

@@ -20,7 +20,7 @@ export const WHATSAPP_APPS: WhatsAppApp[] = [
 
 export type WhatsAppChoice = 'none' | 'single' | 'ask';
 
-/** Only ask the user when there is a real choice to make. */
+/** Only ask the user when there is a choice to make (2 apps installed, or detection was hidden on Android). */
 export function whatsAppChoiceFor(installedCount: number): WhatsAppChoice {
   if (installedCount >= 2) return 'ask';
   if (installedCount === 1) return 'single';

@@ -154,3 +154,64 @@ describe('PDF export content', () => {
     expect(buildMonthHtml(getSummaryMonthDetail(bills, 2026, 0), meta)).toContain('No sales recorded in this month.');
   });
 });
+
+describe('month summary with expenses and net profit', () => {
+  const sampleExpenses = [
+    {
+      id: 'e1',
+      shop_id: 's',
+      category_id: null,
+      category_name: 'Rent & Electricity',
+      note: 'Salon rent portion',
+      amount_minor: 25000,
+      payment_method: 'UPI',
+      expense_date: new Date(2026, 9, 5).toISOString(),
+      created_at: new Date(2026, 9, 5).toISOString(),
+      include_in_profit: true,
+    },
+    {
+      id: 'e2',
+      shop_id: 's',
+      category_id: null,
+      category_name: 'Shampoo & Products',
+      note: 'Stock replenishment',
+      amount_minor: 15000,
+      payment_method: 'Cash',
+      expense_date: new Date(2026, 9, 6).toISOString(),
+      created_at: new Date(2026, 9, 6).toISOString(),
+      include_in_profit: true,
+    },
+  ];
+
+  it('correctly calculates total expenses, net profit, and profit margin', () => {
+    // Total sales in Oct: 100,000. Expenses: 40,000. Net Profit: 60,000. Margin: 60%
+    const detail = getSummaryMonthDetail(bills, 2026, 9, sampleExpenses);
+    expect(detail.totals.salesMinor).toBe(100000);
+    expect(detail.totals.expensesMinor).toBe(40000);
+    expect(detail.totals.expensesCount).toBe(2);
+    expect(detail.totals.netProfitMinor).toBe(60000);
+    expect(detail.totals.marginPct).toBe(60);
+  });
+
+  it('includes expenses and net profit in the CSV export', () => {
+    const detail = getSummaryMonthDetail(bills, 2026, 9, sampleExpenses);
+    const csv = buildMonthCsv(detail, meta);
+    expect(csv).toContain('"Total Expenses (INR)","400.00"');
+    expect(csv).toContain('"Net Profit (INR)","600.00"');
+    expect(csv).toContain('"Profit Margin","60%"');
+    expect(csv).toContain('"EXPENSES BREAKDOWN"');
+    expect(csv).toContain('"Rent & Electricity"');
+    expect(csv).toContain('"Shampoo & Products"');
+  });
+
+  it('includes KPI summary and expenses table in the PDF HTML export', () => {
+    const detail = getSummaryMonthDetail(bills, 2026, 9, sampleExpenses);
+    const html = buildMonthHtml(detail, meta);
+    expect(html).toContain('TOTAL EXPENSES');
+    expect(html).toContain('NET PROFIT');
+    expect(html).toContain('60% Margin');
+    expect(html).toContain('Rent &amp; Electricity');
+    expect(html).toContain('Shampoo &amp; Products');
+  });
+});
+

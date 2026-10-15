@@ -335,10 +335,18 @@ export const InvoiceScreen = ({
         upiId: effectiveUpi,
       });
 
-      // 3. Two WhatsApp apps installed (WhatsApp + WhatsApp Business): let the user choose
+      // 3. WhatsApp or WhatsApp Business choice
       const installed = await getInstalledWhatsAppApps();
-      if (whatsAppChoiceFor(installed.length) === 'ask') {
-        setPendingWhatsApp({ phone: cleanPhone, message, apps: installed });
+      const choice = whatsAppChoiceFor(installed.length);
+      if (choice === 'ask' || (Platform.OS === 'android' && installed.length === 0)) {
+        const appsToUse: InstalledWhatsAppApp[] =
+          installed.length >= 2
+            ? installed
+            : [
+                { id: 'whatsapp', label: 'WhatsApp', packageName: 'com.whatsapp', iconBase64: null },
+                { id: 'business', label: 'WhatsApp Business', packageName: 'com.whatsapp.w4b', iconBase64: null },
+              ];
+        setPendingWhatsApp({ phone: cleanPhone, message, apps: appsToUse });
         return;
       }
 
