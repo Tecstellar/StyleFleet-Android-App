@@ -8,13 +8,15 @@ import { useLanguage } from '../../i18n/LanguageContext';
 import { fmt, localeFor } from '../../i18n/format';
 import { getGlass } from '../../theme/glass';
 import { inrFromMinor } from '../../utils/format';
-import { Bill } from '../../types/domain';
-import { getSummaryYears, getSummaryMonths, getSummaryMonthDetail } from '../../utils/salesSummary';
+import { Bill, Expense } from '../../types/domain';
+import { getSummaryYears, getSummaryMonths, getSummaryMonthDetail, dateKeyOf } from '../../utils/salesSummary';
 import { buildMonthCsv, buildMonthHtml } from '../../utils/salesSummaryExport';
 import { ExcelIcon, PdfIcon } from '../common/SvgIcons';
+import { radii } from '../../theme/spacing';
 
 interface SalesSummaryViewProps {
   bills: Bill[];
+  expenses?: Expense[];
   shopName: string;
   /** Free plan past the sales limit: downloads are locked, like the Report tab. */
   isDownloadLocked?: boolean;
@@ -24,9 +26,16 @@ interface SalesSummaryViewProps {
 type ExportKind = 'csv' | 'pdf';
 
 /**
- * Sales by year, then month. Tapping a month lists every sale in it (date, name, services, amount) with Excel and PDF downloads.
+ * Sales, expenses, and net profit by year, then month.
+ * Tapping a month lists every sale and expense in it with Excel and PDF downloads.
  */
-export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, onUpgradePlan }: SalesSummaryViewProps) => {
+export const SalesSummaryView = ({
+  bills,
+  expenses = [],
+  shopName,
+  isDownloadLocked = false,
+  onUpgradePlan,
+}: SalesSummaryViewProps) => {
   const { colors } = useTheme();
   const { t, language } = useLanguage();
   const glass = getGlass(colors.isDark);
@@ -36,12 +45,12 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
   const [month, setMonth] = useState<number | null>(null);
   const [exporting, setExporting] = useState<ExportKind | null>(null);
 
-  const years = useMemo(() => getSummaryYears(bills), [bills]);
-  const months = useMemo(() => (year === null ? [] : getSummaryMonths(bills, year)), [bills, year]);
+  const years = useMemo(() => getSummaryYears(bills, expenses), [bills, expenses]);
+  const months = useMemo(() => (year === null ? [] : getSummaryMonths(bills, year, expenses)), [bills, year, expenses]);
   const target = year !== null && month !== null ? { year, month } : null;
   const detail = useMemo(
-    () => (target ? getSummaryMonthDetail(bills, target.year, target.month) : null),
-    [bills, target]
+    () => (target ? getSummaryMonthDetail(bills, target.year, target.month, expenses) : null),
+    [bills, target, expenses]
   );
 
   const monthName = (m: number) => new Date(2000, m, 1).toLocaleDateString(locale, { month: 'long' });
@@ -70,7 +79,7 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
       };
       const cleanShop = meta.shopName.replace(/[^a-zA-Z0-9_-]/g, '_');
       const stamp = `${target.year}-${String(target.month + 1).padStart(2, '0')}`;
-      const filename = `Sales_Summary_${cleanShop}_${stamp}_${Date.now()}.${kind === 'csv' ? 'csv' : 'pdf'}`;
+      const filename = `Financial_Summary_${cleanShop}_${stamp}_${Date.now()}.${kind === 'csv' ? 'csv' : 'pdf'}`;
       const targetUri = `${FileSystem.cacheDirectory}${filename}`;
 
       if (kind === 'csv') {
@@ -103,28 +112,63 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
     }
   };
 
-  const row = (key: string, label: string, sub: string, amountMinor: number, onPress: () => void) => (
-    <TouchableOpacity
-      key={key}
-      activeOpacity={0.85}
-      onPress={onPress}
-      style={[styles.row, glass.card, { borderWidth: 1 }]}
-    >
-      <View style={{ flex: 1, paddingRight: 8 }}>
-        <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
-        <Text style={[styles.rowSub, { color: colors.textDim }]}>{sub}</Text>
-      </View>
-      <Text style={[styles.rowAmount, { color: colors.text }]}>{inrFromMinor(amountMinor)}</Text>
-      <Text style={[styles.chevron, { color: colors.textDim }]}>{'›'}</Text>
-    </TouchableOpacity>
-  );
+  const row = (
+    key: string,
+    label: string,
+    sub: string,
+    salesMinor: number,
+    onPress: () => void,
+    expensesMinor?: number,
+    netProfitMinor?: number,
+    marginPct?: number
+  ) => {
+    const hasExp = typeof expensesMinor === 'number' && expensesMinor > 0;
+    const hasProfit = typeof netProfitMinor === 'number';
+    return (
+      <TouchableOpacity
+        key={key}
+        activeOpacity={0.85}
+        onPress={onPress}
+        style={[styles.row, glass.card, { borderWidth: 1 }]}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+          <Text style={[styles.rowSub, { color: colors.textDim }]}>
+            {sub}
+            {hasExp ? ` · Exp: ${inrFromMinor(expensesMinor)}` : ''}
+          </Text>
+        </View>
+        <View style={{ alignItems: 'flex-end', paddingRight: 4 }}>
+          {hasProfit ? (
+            <>
+              <Text
+                style={[
+                  styles.rowAmount,
+                  { color: netProfitMinor >= 0 ? colors.accent : colors.error },
+                ]}
+              >
+                {inrFromMinor(netProfitMinor)}
+              </Text>
+              <Text style={{ fontSize: 10.5, color: colors.textDim, fontWeight: '600', marginTop: 1 }}>
+                Sales: {inrFromMinor(salesMinor)}
+                {typeof marginPct === 'number' ? ` (${marginPct}%)` : ''}
+              </Text>
+            </>
+          ) : (
+            <Text style={[styles.rowAmount, { color: colors.text }]}>{inrFromMinor(salesMinor)}</Text>
+          )}
+        </View>
+        <Text style={[styles.chevron, { color: colors.textDim }]}>{'›'}</Text>
+      </TouchableOpacity>
+    );
+  };
 
   // A download tile: coloured file icon, the format name, and (in the roomy version) a short hint
   const downloadTile = (kind: ExportKind, compact = false) => {
     const isExcel = kind === 'csv';
     const tint = isExcel ? '#10B981' : '#EF4444';
     const label = isExcel ? t('smDownloadExcel', 'Download Excel') : t('smDownloadPdf', 'Download PDF');
-    const hint = isExcel ? t('smExcelHint', 'Spreadsheet') : t('smPdfHint', 'Ready to print');
+    const hint = isExcel ? t('smExcelHint', 'Spreadsheet with Profit & Expenses') : t('smPdfHint', 'Ready to print summary');
     return (
       <TouchableOpacity
         key={kind}
@@ -158,7 +202,7 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
 
   return (
     <View>
-      <Text style={[styles.sub, { color: colors.textDim }]}>{t('smSub', 'Sales by year and month')}</Text>
+      <Text style={[styles.sub, { color: colors.textDim }]}>{t('smSub', 'Financial & sales summary by year and month')}</Text>
 
       {year !== null && (
         <View style={styles.crumbs}>
@@ -196,18 +240,105 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
 
       {years.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={{ color: colors.textDim, fontSize: 13 }}>{t('smNoSales', 'No sales recorded yet')}</Text>
+          <Text style={{ color: colors.textDim, fontSize: 13 }}>{t('smNoSales', 'No sales or expenses recorded yet')}</Text>
         </View>
       ) : year === null ? (
-        years.map((y) => row(String(y.year), String(y.year), billsText(y.billsCount), y.salesMinor, () => setYear(y.year)))
+        years.map((y) =>
+          row(
+            String(y.year),
+            String(y.year),
+            billsText(y.billsCount),
+            y.salesMinor,
+            () => setYear(y.year),
+            y.expensesMinor,
+            y.netProfitMinor,
+            y.marginPct
+          )
+        )
       ) : month === null ? (
         months.map((m) =>
-          row(String(m.month), `${monthName(m.month)} ${year}`, billsText(m.billsCount), m.salesMinor, () =>
-            setMonth(m.month)
+          row(
+            String(m.month),
+            `${monthName(m.month)} ${year}`,
+            billsText(m.billsCount),
+            m.salesMinor,
+            () => setMonth(m.month),
+            m.expensesMinor,
+            m.netProfitMinor,
+            m.marginPct
           )
         )
       ) : (
         <>
+          {/* Month Financial Overview KPI Card */}
+          {detail && (
+            <View style={[styles.monthKpiCard, glass.card, { borderWidth: 1 }]}>
+              <View style={styles.monthKpiHeader}>
+                <View>
+                  <Text style={[styles.kpiLabel, { color: colors.textDim }]}>
+                    {t('netProfit', 'NET PROFIT')}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.netProfitValue,
+                      { color: (detail.totals.netProfitMinor ?? 0) >= 0 ? colors.accent : colors.error },
+                    ]}
+                  >
+                    {inrFromMinor(
+                      detail.totals.netProfitMinor ??
+                        (detail.totals.salesMinor - (detail.totals.expensesMinor || 0))
+                    )}
+                  </Text>
+                </View>
+                <View style={[styles.marginBadge, { backgroundColor: colors.accent + '22', borderColor: colors.accent + '55', borderWidth: 1 }]}>
+                  <Text style={[styles.marginText, { color: colors.accent }]}>
+                    {detail.totals.marginPct ?? 0}% {t('margin', 'Margin')}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.kpiGrid, { borderTopColor: colors.divider }]}>
+                <View style={styles.kpiCol}>
+                  <Text style={[styles.kpiSubLabel, { color: colors.textDim }]}>{t('totalSales', 'Sales')}</Text>
+                  <Text style={[styles.kpiSubValue, { color: colors.text }]}>
+                    {inrFromMinor(detail.totals.salesMinor)}
+                  </Text>
+                  <Text style={[styles.kpiCount, { color: colors.textMuted }]}>
+                    {billsText(detail.totals.billsCount)}
+                  </Text>
+                </View>
+
+                <View style={styles.kpiCol}>
+                  <Text style={[styles.kpiSubLabel, { color: colors.textDim }]}>{t('expenses', 'Expenses')}</Text>
+                  <Text style={[styles.kpiSubValue, { color: colors.error }]}>
+                    {inrFromMinor(detail.totals.expensesMinor || 0)}
+                  </Text>
+                  <Text style={[styles.kpiCount, { color: colors.textMuted }]}>
+                    {detail.totals.expensesCount || (detail.expenses ? detail.expenses.length : 0)} {t('entries', 'entries')}
+                  </Text>
+                </View>
+
+                <View style={styles.kpiCol}>
+                  <Text style={[styles.kpiSubLabel, { color: colors.textDim }]}>{t('netProfit', 'Net Profit')}</Text>
+                  <Text
+                    style={[
+                      styles.kpiSubValue,
+                      { color: (detail.totals.netProfitMinor ?? 0) >= 0 ? '#10B981' : colors.error },
+                    ]}
+                  >
+                    {inrFromMinor(
+                      detail.totals.netProfitMinor ??
+                        (detail.totals.salesMinor - (detail.totals.expensesMinor || 0))
+                    )}
+                  </Text>
+                  <Text style={[styles.kpiCount, { color: colors.accent }]}>
+                    {detail.totals.marginPct ?? 0}%
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* Inside the month: one row per date, then downloads */}
           {detail && detail.days.length === 0 ? (
             <View style={styles.empty}>
@@ -241,7 +372,7 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
               )}
               <View style={[styles.tRow, { borderBottomWidth: 0 }]}>
                 <Text style={[styles.tCell, { flex: 1, color: colors.text, fontWeight: '800' }]}>
-                  {t('smMonthTotal', 'Month total')}
+                  {t('smMonthTotal', 'Month sales total')}
                 </Text>
                 <Text style={[styles.tCell, { color: colors.accent, fontWeight: '800', textAlign: 'right' }]}>
                   {inrFromMinor(detail?.totals.salesMinor || 0)}
@@ -249,6 +380,43 @@ export const SalesSummaryView = ({ bills, shopName, isDownloadLocked = false, on
               </View>
             </View>
           )}
+
+          {/* Expenses Breakdown in Month (if any) */}
+          {detail?.expenses && detail.expenses.length > 0 && (
+            <View style={[styles.sheetTable, glass.card, { borderWidth: 1, marginTop: 12 }]}>
+              <View style={[styles.tRow, { borderBottomColor: colors.divider, backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+                <Text style={[styles.tCell, styles.tDate, styles.tHead, { color: colors.text }]}>{t('date', 'Date')}</Text>
+                <Text style={[styles.tCell, styles.tName, styles.tHead, { color: colors.text }]}>{t('category', 'Category')}</Text>
+                <Text style={[styles.tCell, styles.tService, styles.tHead, { color: colors.text }]}>{t('notes', 'Note')}</Text>
+                <Text style={[styles.tCell, styles.tAmount, styles.tHead, { color: colors.text }]}>{t('amount', 'Amount')}</Text>
+              </View>
+              {detail.expenses.map((ex) => (
+                <View key={ex.id} style={[styles.tRow, { borderBottomColor: colors.divider }]}>
+                  <Text numberOfLines={1} style={[styles.tCell, styles.tDate, { color: colors.textDim }]}>
+                    {shortDate(dateKeyOf(ex.time))}
+                  </Text>
+                  <Text style={[styles.tCell, styles.tName, { color: colors.text, fontWeight: '700' }]}>
+                    {ex.categoryName || 'General'}
+                  </Text>
+                  <Text style={[styles.tCell, styles.tService, { color: colors.textDim }]}>
+                    {ex.note || '—'}
+                  </Text>
+                  <Text style={[styles.tCell, styles.tAmount, { color: colors.error, fontWeight: '800' }]}>
+                    {inrFromMinor(ex.amountMinor)}
+                  </Text>
+                </View>
+              ))}
+              <View style={[styles.tRow, { borderBottomWidth: 0 }]}>
+                <Text style={[styles.tCell, { flex: 1, color: colors.text, fontWeight: '800' }]}>
+                  {t('totalExpenses', 'Total Expenses')}
+                </Text>
+                <Text style={[styles.tCell, { color: colors.error, fontWeight: '800', textAlign: 'right' }]}>
+                  {inrFromMinor(detail.totals.expensesMinor || 0)}
+                </Text>
+              </View>
+            </View>
+          )}
+
           <View style={styles.tileRow}>
             {downloadTile('csv', true)}
             {downloadTile('pdf', true)}
@@ -267,6 +435,17 @@ const styles = StyleSheet.create({
   title: { fontSize: 15, fontWeight: '800', marginBottom: 10 },
   empty: { paddingVertical: 28, alignItems: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 8 },
+  monthKpiCard: { borderRadius: 16, padding: 14, marginBottom: 12 },
+  monthKpiHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  kpiLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase' },
+  netProfitValue: { fontSize: 24, fontWeight: '800', marginTop: 3 },
+  marginBadge: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: radii.pill },
+  marginText: { fontSize: 11.5, fontWeight: '700' },
+  kpiGrid: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 10, gap: 8 },
+  kpiCol: { flex: 1 },
+  kpiSubLabel: { fontSize: 11, fontWeight: '700' },
+  kpiSubValue: { fontSize: 14, fontWeight: '800', marginTop: 2 },
+  kpiCount: { fontSize: 10.5, marginTop: 1 },
   sheetTable: { borderRadius: 14, overflow: 'hidden', marginBottom: 10 },
   tRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 7, paddingHorizontal: 8, borderBottomWidth: 1 },
   tCell: { fontSize: 12, paddingHorizontal: 3 },
@@ -275,53 +454,15 @@ const styles = StyleSheet.create({
   tName: { flex: 1.1 },
   tService: { flex: 1.3 },
   tAmount: { width: 78, flexShrink: 0, textAlign: 'right' },
-  dayCard: { borderRadius: 14, paddingTop: 8, paddingHorizontal: 12, paddingBottom: 2, marginBottom: 6 },
-  dayCardHead: { flexDirection: 'row', alignItems: 'center', paddingBottom: 3 },
-  billLine: { flex: 1, fontSize: 12.5, paddingRight: 10 },
   rowLabel: { fontSize: 15, fontWeight: '700' },
   rowSub: { fontSize: 12, marginTop: 1, lineHeight: 17 },
   rowAmount: { fontSize: 15, fontWeight: '800' },
   chevron: { fontSize: 22, marginLeft: 8, marginTop: -2 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  sheet: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 20,
-  },
-  previewSheet: { maxHeight: '90%' },
-  grabber: { alignSelf: 'center', width: 38, height: 4, borderRadius: 2, marginBottom: 12 },
-  sheetTitle: { fontSize: 18, fontWeight: '800' },
-  primaryBtn: {
-    height: 46,
-    borderRadius: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-  },
-  primaryBtnText: { color: '#0D0E11', fontWeight: '800', fontSize: 14.5, letterSpacing: 0.2 },
-  sectionLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.7, textTransform: 'uppercase', marginTop: 14, marginBottom: 8 },
-  tileRow: { flexDirection: 'row', gap: 8 },
+  tileRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
   tile: { flex: 1, borderRadius: 20, paddingVertical: 18, paddingHorizontal: 12, alignItems: 'center', gap: 10 },
-  tileCompact: { flex: 1, borderRadius: 14, paddingVertical: 7, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  tileCompact: { flex: 1, borderRadius: 14, paddingVertical: 8, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   tileIcon: { width: 48, height: 48, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   tileIconSmall: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  tileLabel: { fontSize: 14, fontWeight: '800', letterSpacing: 0.2 },
+  tileLabel: { fontSize: 13.5, fontWeight: '800', letterSpacing: 0.2 },
   tileHint: { fontSize: 12, marginTop: 2, textAlign: 'center' },
-  cancelLink: { alignItems: 'center', justifyContent: 'center', paddingVertical: 10, marginTop: 4 },
-  dayHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 12, paddingVertical: 8, paddingHorizontal: 12, marginTop: 8 },
-  dayHeadText: { fontSize: 13, fontWeight: '800' },
-  dayHeadSub: { fontSize: 11.5, fontWeight: '600' },
-  billRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, paddingHorizontal: 4, borderBottomWidth: 1 },
-  billCustomer: { fontSize: 14, fontWeight: '700' },
-  billPrice: { fontSize: 14, fontWeight: '800' },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, marginTop: 6, borderTopWidth: 1 },
-  closeBtn: { height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 10 },
 });

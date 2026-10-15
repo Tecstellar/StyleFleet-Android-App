@@ -1672,6 +1672,7 @@ export const AppNavigator = () => {
             logoUrl={currentShop?.logo_path}
             remindersCount={reminders.length}
             bills={bills}
+            isStylist={isStylist}
             totalSalesCount={totalSalesCount}
             shopCreatedAt={currentShop?.created_at}
             isPro={isPro}
@@ -1869,6 +1870,7 @@ export const AppNavigator = () => {
             onRefresh={refreshShopData}
             bills={bills}
             shopName={currentShop?.name}
+            isStylist={isStylist}
             onOpenInvoice={(bill) => {
               setSelectedBill(bill);
               navigateTo('invoice');

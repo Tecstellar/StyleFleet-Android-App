@@ -6,6 +6,8 @@ import { getGlass } from '../../theme/glass';
 import { radii } from '../../theme/spacing';
 import { InstalledWhatsAppApp } from '../../services/whatsappLauncher';
 
+import { WhatsAppBrandIcon, WhatsAppBusinessBrandIcon } from './SvgIcons';
+
 interface WhatsAppAppPickerModalProps {
   visible: boolean;
   apps: InstalledWhatsAppApp[];
@@ -13,11 +15,20 @@ interface WhatsAppAppPickerModalProps {
   onCancel: () => void;
 }
 
-/** Shown only when WhatsApp and WhatsApp Business are both installed. */
+/** Shown when WhatsApp and WhatsApp Business options are available. */
 export const WhatsAppAppPickerModal = ({ visible, apps, onSelect, onCancel }: WhatsAppAppPickerModalProps) => {
   const { colors } = useTheme();
   const { t } = useLanguage();
   const glass = getGlass(colors.isDark);
+
+  // If empty, present both standard apps as options
+  const displayApps: InstalledWhatsAppApp[] =
+    apps && apps.length > 0
+      ? apps
+      : [
+          { id: 'whatsapp', label: 'WhatsApp', packageName: 'com.whatsapp', iconBase64: null },
+          { id: 'business', label: 'WhatsApp Business', packageName: 'com.whatsapp.w4b', iconBase64: null },
+        ];
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
@@ -27,10 +38,10 @@ export const WhatsAppAppPickerModal = ({ visible, apps, onSelect, onCancel }: Wh
           <View style={[styles.grabber, { backgroundColor: colors.divider }]} />
           <Text style={[styles.title, { color: colors.text }]}>{t('waPickTitle', 'Send bill with')}</Text>
           <Text style={[styles.sub, { color: colors.textDim }]}>
-            {t('waPickSub', 'WhatsApp and WhatsApp Business are both installed. Choose which one to use.')}
+            {t('waPickSub', 'Choose which WhatsApp account to open and send this bill:')}
           </Text>
 
-          {apps.map((app) => (
+          {displayApps.map((app) => (
             <TouchableOpacity
               key={app.id}
               activeOpacity={0.85}
@@ -39,14 +50,12 @@ export const WhatsAppAppPickerModal = ({ visible, apps, onSelect, onCancel }: Wh
               accessibilityLabel={app.label}
               style={[styles.row, glass.card, { borderWidth: 1 }]}
             >
-              {app.iconBase64 ? (
-                <Image source={{ uri: `data:image/png;base64,${app.iconBase64}` }} style={styles.icon} />
+              {app.id === 'business' ? (
+                <WhatsAppBusinessBrandIcon size={44} />
               ) : (
-                <View style={[styles.icon, styles.iconFallback, { backgroundColor: colors.accent + '24' }]}>
-                  <Text style={{ color: colors.accent, fontWeight: '800' }}>{app.label.charAt(0)}</Text>
-                </View>
+                <WhatsAppBrandIcon size={44} />
               )}
-              <View style={{ flex: 1 }}>
+              <View style={{ flex: 1, marginLeft: 2 }}>
                 <Text style={[styles.rowLabel, { color: colors.text }]}>{app.label}</Text>
                 <Text style={[styles.rowSub, { color: colors.textDim }]}>
                   {app.id === 'business'
@@ -54,6 +63,7 @@ export const WhatsAppAppPickerModal = ({ visible, apps, onSelect, onCancel }: Wh
                     : t('waPersonalSub', 'Personal account')}
                 </Text>
               </View>
+              <Text style={{ fontSize: 18, color: colors.accent, fontWeight: '700' }}>→</Text>
             </TouchableOpacity>
           ))}
 
