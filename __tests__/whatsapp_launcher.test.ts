@@ -2,6 +2,7 @@ import { translations, LanguageCode } from '../src/i18n/translations';
 
 const mockPlatform = { OS: 'android' };
 const mockLinking = { canOpenURL: jest.fn(), openURL: jest.fn() };
+const mockAlert = { alert: jest.fn() };
 const mockIntent = { getApplicationIconAsync: jest.fn(), startActivityAsync: jest.fn() };
 
 jest.mock('react-native', () => ({
@@ -9,6 +10,7 @@ jest.mock('react-native', () => ({
     return mockPlatform;
   },
   Linking: mockLinking,
+  Alert: mockAlert,
 }));
 jest.mock('expo-intent-launcher', () => mockIntent);
 
@@ -18,10 +20,16 @@ import {
   buildChatUrls,
   getInstalledWhatsAppApps,
   openWhatsAppChat,
+  openWhatsAppPreferred,
+  setPreferredWhatsApp,
   whatsAppChoiceFor,
 } from '../src/services/whatsappLauncher';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const plugin = require('../plugins/withWhatsAppQueries');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const launcherPlugin = require('../plugins/withIntentLauncherPackage');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const fs = require('fs');
 
 const installOnly = (...packages: string[]) =>
   mockIntent.getApplicationIconAsync.mockImplementation((pkg: string) =>
@@ -88,10 +96,10 @@ describe('opening the chat', () => {
     expect(mockLinking.openURL).not.toHaveBeenCalled();
   });
 
-  it('falls back to the system default if the chosen app cannot open it', async () => {
+  it('says so, and never opens the other WhatsApp, if the chosen app cannot open it', async () => {
     mockIntent.startActivityAsync.mockRejectedValue(new Error('ActivityNotFound'));
-    await openWhatsAppChat('9876543210', 'hello', app);
-    expect(mockLinking.openURL).toHaveBeenCalledWith(expect.stringContaining('whatsapp://send'));
+    await expect(openWhatsAppChat('9876543210', 'hello', app)).rejects.toThrow(/WhatsApp Business/);
+    expect(mockLinking.openURL).not.toHaveBeenCalled();
   });
 
   it('uses the system default when no app was chosen', async () => {
@@ -132,4 +140,66 @@ describe('picker strings', () => {
       expect(keys.filter((k) => !translations[lang][k])).toEqual([]);
     });
   }
+});
+
+describe('every screen opens the same WhatsApp', () => {
+  const lastPackage = () => mockIntent.startActivityAsync.mock.calls.pop()?.[1]?.packageName;
+
+  it('uses the only installed app explicitly', async () => {
+    installOnly('com.whatsapp.w4b');
+    await openWhatsAppPreferred('9876543210', 'hi');
+    expect(lastPackage()).toBe('com.whatsapp.w4b');
+  });
+
+  it('uses the remembered choice when both are installed, without asking', async () => {
+    installOnly('com.whatsapp', 'com.whatsapp.w4b');
+    await setPreferredWhatsApp('business');
+    await openWhatsAppPreferred('9876543210', 'hi');
+    expect(mockAlert.alert).not.toHaveBeenCalled();
+    expect(lastPackage()).toBe('com.whatsapp.w4b');
+  });
+
+  it('asks once when there is no choice yet, then remembers it', async () => {
+    installOnly('com.whatsapp', 'com.whatsapp.w4b');
+    await require('@react-native-async-storage/async-storage').removeItem('@stylefleet_whatsapp_app');
+    mockAlert.alert.mockImplementationOnce((_t: string, _m: string, buttons: any[]) => buttons.find((b) => b.text === 'WhatsApp Business').onPress());
+    await openWhatsAppPreferred('9876543210', 'hi');
+    expect(lastPackage()).toBe('com.whatsapp.w4b');
+    mockAlert.alert.mockClear();
+    await openWhatsAppPreferred('9876543210', 'again');
+    expect(mockAlert.alert).not.toHaveBeenCalled();
+  });
+
+  it('opens nothing when the dialog is dismissed', async () => {
+    installOnly('com.whatsapp', 'com.whatsapp.w4b');
+    await require('@react-native-async-storage/async-storage').removeItem('@stylefleet_whatsapp_app');
+    mockAlert.alert.mockImplementationOnce((_t: string, _m: string, buttons: any[]) => buttons.find((b) => b.text === 'Cancel').onPress());
+    await openWhatsAppPreferred('9876543210', 'hi');
+    expect(mockIntent.startActivityAsync).not.toHaveBeenCalled();
+    expect(mockLinking.openURL).not.toHaveBeenCalled();
+  });
+});
+
+describe('native patch for expo-intent-launcher', () => {
+  const source = () => fs.readFileSync(launcherPlugin.modulePath(), 'utf8');
+
+  it('finds its patch point in the installed library and makes it call setPackage', () => {
+    const out = launcherPlugin.patchSource(source());
+    expect(out).toContain('intent.setPackage(params.packageName)');
+    expect(out).toContain(launcherPlugin.MARKER);
+  });
+
+  it('is safe to apply twice', () => {
+    const once = launcherPlugin.patchSource(source());
+    expect(launcherPlugin.patchSource(once)).toBe(once);
+  });
+
+  it('fails the build loudly if the library changes shape', () => {
+    expect(() => launcherPlugin.patchSource('class Other {}')).toThrow(/patch point was not found/);
+  });
+
+  it('is registered in app.json', () => {
+    const app = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+    expect(app.expo.plugins).toContain('./plugins/withIntentLauncherPackage');
+  });
 });

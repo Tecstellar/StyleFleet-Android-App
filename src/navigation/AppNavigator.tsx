@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { openWhatsAppPreferred } from '../services/whatsappLauncher';
 import { View, StyleSheet, ActivityIndicator, Alert, Platform, StatusBar as RNStatusBar, Linking, BackHandler, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,6 +23,8 @@ import {
   expensesVisibleTo,
   requiredPermission,
   resolvePermissions,
+  billsVisibleTo,
+  ownBillsOf,
   STYLIST_MODULE_LABELS,
 } from '../utils/stylistAccess';
 import { serviceRepository } from '../repositories/serviceRepository';
@@ -82,6 +85,8 @@ export const AppNavigator = () => {
   const [activeTab, setActiveTab] = useState<MainTab>('home');
   const [history, setHistory] = useState<ScreenName[]>([]);
   const initialDestinationRef = useRef<ScreenName>('home');
+  // The price list asks before leaving with unsaved changes
+  const pricingBackGuardRef = useRef<(() => boolean) | null>(null);
   const [initialDestination, setInitialDestinationState] = useState<ScreenName>('home');
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
@@ -533,6 +538,12 @@ export const AppNavigator = () => {
   const stylistPerms = isStylist ? resolvePermissions(currentUser?.permissions) : null;
   // Stylists without "past expenses" only ever see today's expenses, wherever expenses are shown.
   const visibleExpenses = expensesVisibleTo(expenses, isStylist, stylistPerms);
+  // Stylists see only the bills they served today; "full reports" widens that for the Reports screen.
+  const stylistName = staff.find((s) => s.id === currentUser?.stylistId)?.name || currentUser?.fullName;
+  const ownBills = billsVisibleTo(bills, isStylist, stylistPerms, currentUser?.stylistId, stylistName);
+  const salesBills = isStylist ? ownBillsOf(bills, currentUser?.stylistId, stylistName) : bills;
+  const reportBills = billsVisibleTo(bills, isStylist, stylistPerms, currentUser?.stylistId, stylistName, true);
+  const reportsFullAccess = !isStylist || stylistPerms?.reportsHistory === true;
 
   const checkStylistAccess = (moduleName: keyof StylistPermissions, label: string): boolean => {
     if (isStylist && stylistPerms && stylistPerms[moduleName] !== true) {
@@ -570,6 +581,19 @@ export const AppNavigator = () => {
       loadShopData(currentShop.id).catch(() => {});
     }
     setScreen(nextScreen);
+  };
+
+  // The user is already signed in here, so reopening the app lands back on register (no OTP again).
+  const confirmCancelRegistration = () => {
+    Alert.alert(
+      "Cancel registration?",
+      "Your shop is not registered yet. Do you want to cancel before registering?",
+      [
+        { text: "No", style: "cancel" },
+        { text: "Yes", onPress: () => BackHandler.exitApp() },
+      ],
+      { cancelable: true }
+    );
   };
 
   const goBack = () => {
@@ -617,6 +641,15 @@ export const AppNavigator = () => {
         return true;
       }
 
+      if (screen === 'pricing' && pricingBackGuardRef.current?.()) {
+        return true;
+      }
+
+      if (screen === 'invoice') {
+        handleTabSelect('sales');
+        return true;
+      }
+
       // 2. If there is navigation history, pop back to the previous screen
       if (history.length > 0) {
         goBack();
@@ -642,7 +675,11 @@ export const AppNavigator = () => {
       }
 
       // 5. If on auth sub-screens, navigate back to phone entry
-      if (['otp', 'register', 'workers'].includes(screen)) {
+      if (screen === 'register') {
+        confirmCancelRegistration();
+        return true;
+      }
+      if (['otp', 'workers'].includes(screen)) {
         setScreen('phone');
         return true;
       }
@@ -1568,20 +1605,7 @@ export const AppNavigator = () => {
       `Thank you!\n*${sName}*`;
 
     if (cleanPhone.length === 10) {
-      const nativeUrl = `whatsapp://send?phone=91${cleanPhone}&text=${encodeURIComponent(message)}`;
-      const webUrl = `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(message)}`;
-
-      Linking.canOpenURL(nativeUrl)
-        .then((supported) => {
-          if (supported) {
-            Linking.openURL(nativeUrl).catch(() => Linking.openURL(webUrl));
-          } else {
-            Linking.openURL(webUrl);
-          }
-        })
-        .catch(() => {
-          Linking.openURL(webUrl);
-        });
+      openWhatsAppPreferred(cleanPhone, message).catch((e: unknown) => Alert.alert('WhatsApp', e instanceof Error ? e.message : 'Could not open WhatsApp.'));
     } else {
       Alert.alert(
         'Phone Number Missing',
@@ -1671,7 +1695,7 @@ export const AppNavigator = () => {
             shopName={currentShop?.name}
             logoUrl={currentShop?.logo_path}
             remindersCount={reminders.length}
-            bills={bills}
+            bills={ownBills}
             isStylist={isStylist}
             totalSalesCount={totalSalesCount}
             shopCreatedAt={currentShop?.created_at}
@@ -1749,7 +1773,7 @@ export const AppNavigator = () => {
           <RegisterScreen
             initialData={pendingRegistration || undefined}
             onNext={handleRegisterNext}
-            onBack={goBack}
+            onBack={confirmCancelRegistration}
           />
         )}
 
@@ -1868,7 +1892,7 @@ export const AppNavigator = () => {
         {screen === 'sales' && (
           <SalesScreen
             onRefresh={refreshShopData}
-            bills={bills}
+            bills={salesBills}
             shopName={currentShop?.name}
             isStylist={isStylist}
             onOpenInvoice={(bill) => {
@@ -1963,7 +1987,7 @@ export const AppNavigator = () => {
             userRole={currentUser?.role}
             isStylist={currentUser?.role === 'stylist'}
             canShareBills={canShareBills(isStylist, stylistPerms)}
-            onBack={goBack}
+            onBack={() => handleTabSelect('sales')}
             onSendWhatsApp={handleSendInvoiceWhatsApp}
             onEditBill={(b) => {
               setEditingBill(b);
@@ -2031,6 +2055,9 @@ export const AppNavigator = () => {
             canChooseProfit={!isStylist}
             staff={staff}
             canTagStylist={!isStylist}
+            isDownloadLocked={!isPro && totalSalesCount >= freeSalesLimit}
+            shopName={currentShop?.name}
+            onUpgradePlan={() => setShowPlanSelectionModal(true)}
             onBack={goBack}
             onAddExpense={handleAddExpense}
             onEditExpense={handleUpdateExpense}
@@ -2287,6 +2314,7 @@ export const AppNavigator = () => {
             shopId={currentShop?.id}
             shopName={currentShop?.name || 'My Salon'}
             onBack={goBack}
+            backGuardRef={pricingBackGuardRef}
             onAddCategory={async (catName: string) => {
               if (!currentShop) throw new Error('No active shop');
               const created = await serviceRepository.addCategory(currentShop.id, catName);
@@ -2329,6 +2357,7 @@ export const AppNavigator = () => {
             }}
             onImportMenuAI={async (items) => {
               if (!currentShop) return;
+              const knownIds = new Set(services.map((sv) => sv.id));
               let imported: Service[];
               try {
                 imported = await serviceRepository.importMenuFromAI(currentShop.id, items);
@@ -2341,6 +2370,7 @@ export const AppNavigator = () => {
               setServices(imported);
               const reloadedCats = await serviceRepository.getCategories(currentShop.id);
               setCategories(reloadedCats);
+              return { added: imported.filter((sv) => !knownIds.has(sv.id)).length };
             }}
           />
         )}
@@ -2405,8 +2435,8 @@ export const AppNavigator = () => {
           <ReportsScreen
             initialView={reportsStart.view}
             initialPeriod={reportsStart.period}
-            bills={bills}
-            expenses={visibleExpenses}
+            bills={reportBills}
+            expenses={reportsFullAccess ? visibleExpenses : []}
             staff={staff}
             customers={customers}
             appointments={appointments}

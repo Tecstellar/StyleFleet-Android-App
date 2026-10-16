@@ -317,7 +317,12 @@ export const NewBillScreen = ({
     return [];
   }, [editingBill, initialStaffName, initialStaffId, defaultStaffId, staff, ownerName]);
 
-  const [selectedStaffIndices, setSelectedStaffIndices] = useState<number[]>(initialStaffIndices);
+  // No active stylists: only the owner can serve, so the stylist step is skipped and the bill goes to the owner.
+  const ownerOnly = !editingBill && !staff.some((s) => s.is_active !== false);
+  const [selectedStaffIndices, setSelectedStaffIndices] = useState<number[]>(ownerOnly ? [-1] : initialStaffIndices);
+  useEffect(() => {
+    if (ownerOnly) setSelectedStaffIndices([-1]);
+  }, [ownerOnly]);
   // A logged-in stylist always books as themselves: no stylist choice is shown
   const stylistLocked = Boolean(defaultStaffId) && !editingBill && staff.some((s) => s.id === defaultStaffId);
 
@@ -1179,7 +1184,7 @@ export const NewBillScreen = ({
         )}
 
         {/* STYLIST SECTION */}
-        {!stylistLocked && (
+        {!ownerOnly && (
         <>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
           <Text style={[styles.sectionLabel, { color: colors.textDim }]}>
@@ -1227,6 +1232,8 @@ export const NewBillScreen = ({
           </TouchableOpacity>
 
           {staff.map((s, idx) => {
+            // A logged-in stylist can bill as themselves or as the owner, not as other stylists
+            if (stylistLocked && s.id !== defaultStaffId) return null;
             const isSelected = selectedStaffIndices.includes(idx);
             return (
               <TouchableOpacity
@@ -2378,7 +2385,8 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 24,
     borderTopWidth: 1,
   },
   summaryRow: {

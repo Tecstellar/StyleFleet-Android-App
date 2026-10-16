@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useTheme } from '../../theme/ThemeContext';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { DEFAULT_ACCENT } from '../../theme/colors';
 import { Button } from '../../components/common/Button';
 import { Input } from '../../components/common/Input';
@@ -32,6 +33,7 @@ interface RegisterScreenProps {
 
 export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenProps) => {
   const { colors, setAccentColor } = useTheme();
+  const { t } = useLanguage();
 
   const [shop, setShop] = useState(initialData?.name || '');
   const [owner, setOwner] = useState(initialData?.ownerName || '');
@@ -47,6 +49,8 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
   const [applyLogoColor, setApplyLogoColor] = useState<boolean>(true);
   const [isExtractingColor, setIsExtractingColor] = useState(false);
   const [isFetchingLocation, setIsFetchingLocation] = useState(false);
+  // True after auto-detect filled the address; any manual edit of the address fields re-enables the button.
+  const [locationDetected, setLocationDetected] = useState(false);
 
   // Logo Picker
   const handlePickLogo = async () => {
@@ -114,6 +118,8 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
         setAddr(parts.join(', '));
         if (geo.city) setCity(geo.city);
         if (geo.postalCode) setPin(geo.postalCode);
+        setLocationDetected(true);
+        Alert.alert(t('regAddressFetchedTitle', 'Address fetched'), t('regAddressFetchedMsg', 'Your address has been fetched. You can edit it if needed.'));
       }
     } catch (e: any) {
       Alert.alert('GPS Notice', 'Could not detect GPS location. You can enter the address manually.');
@@ -306,16 +312,16 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
           <View style={styles.addressHeaderRow}>
             <Text style={[styles.fieldLabel, { color: colors.text }]}>Address</Text>
             <TouchableOpacity
-              style={[styles.liveGpsButton, { backgroundColor: colors.accent800 }]}
+              style={[styles.liveGpsButton, { backgroundColor: colors.accent800, opacity: locationDetected ? 0.4 : 1 }]}
               onPress={handleFetchLiveGPS}
-              disabled={isFetchingLocation}
+              disabled={isFetchingLocation || locationDetected}
               activeOpacity={0.7}
             >
               {isFetchingLocation ? (
                 <ActivityIndicator size="small" color={colors.accent100} />
               ) : (
                 <Text style={[styles.liveGpsText, { color: colors.accent100 }]}>
-                  📍 Live GPS
+                  📍 {t('regAutoDetect', 'Auto detect location')}
                 </Text>
               )}
             </TouchableOpacity>
@@ -323,7 +329,7 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
 
           <Input
             value={addr}
-            onChangeText={setAddr}
+            onChangeText={(v) => { setAddr(v); setLocationDetected(false); }}
             multiline
             numberOfLines={3}
             placeholder="Shop / Unit number, Street, Landmark"
@@ -335,7 +341,7 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
               <Input
                 label="City"
                 value={city}
-                onChangeText={setCity}
+                onChangeText={(v) => { setCity(v); setLocationDetected(false); }}
                 placeholder="Bengaluru"
                 onFocus={() => handleInputFocus(300)}
               />
@@ -347,6 +353,7 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
                 onChangeText={(val) => {
                   const cleaned = val.replace(/\D/g, '').slice(0, 10);
                   setPin(cleaned);
+                  setLocationDetected(false);
                   if (error) setError('');
                 }}
                 keyboardType="numeric"
@@ -368,7 +375,7 @@ export const RegisterScreen = ({ initialData, onNext, onBack }: RegisterScreenPr
           {error ? <Text style={[styles.errorText, { color: colors.error }]}>{error}</Text> : null}
 
           <Button
-            label="Continue to Workers →"
+            label={t('regContinue', 'Continue')}
             block
             onPress={handleSubmit}
             style={{ marginTop: 22 }}

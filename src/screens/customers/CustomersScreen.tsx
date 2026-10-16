@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { openWhatsAppPreferred } from '../../services/whatsappLauncher';
 import {
   View,
   Text,
@@ -184,27 +185,10 @@ export const CustomersScreen = ({
       );
       return;
     }
-    const fullPhone = `91${clean}`;
     const greeting = customerName ? `Hello ${customerName}!` : 'Hello!';
-    const appUrl = `whatsapp://send?phone=${fullPhone}&text=${encodeURIComponent(greeting)}`;
-    const webUrl = `https://wa.me/${fullPhone}?text=${encodeURIComponent(greeting)}`;
-
-    Linking.canOpenURL(appUrl)
-      .then((supported) => {
-        if (supported) {
-          return Linking.openURL(appUrl);
-        } else {
-          return Linking.openURL(webUrl);
-        }
-      })
-      .catch(() => {
-        Linking.openURL(webUrl).catch(() => {
-          Alert.alert(
-            'WhatsApp Unavailable',
-            'Could not open WhatsApp. Please ensure WhatsApp is installed on your device.'
-          );
-        });
-      });
+    openWhatsAppPreferred(clean, greeting).catch((e: unknown) =>
+      Alert.alert('WhatsApp Unavailable', e instanceof Error ? e.message : 'Could not open WhatsApp. Please ensure WhatsApp is installed on your device.')
+    );
   };
 
   const renderCustomerItem = ({ item: c }: { item: Customer }) => {
@@ -323,7 +307,7 @@ export const CustomersScreen = ({
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bg }]}>
+    <SafeAreaView edges={['top']} style={[styles.safeArea, { backgroundColor: colors.bg }]}>
       <GlassBackdrop isDark={colors.isDark} />
       <View style={styles.header}>
         <View style={styles.headerTitleRow}>

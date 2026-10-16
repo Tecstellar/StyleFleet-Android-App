@@ -13,6 +13,7 @@ import {
   PanResponder,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { Modal } from '../../components/common/KeyboardAwareModal';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,6 +34,49 @@ import { inrFromMinor } from '../../utils/format';
 import { radii, shadows } from '../../theme/spacing';
 
 
+/** The price field: it springs up in size while it is being edited, right where it sits in the row. */
+const ZoomPriceInput = ({
+  value,
+  onChange,
+  onDone,
+  color,
+  bg,
+  textColor,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onDone: () => void;
+  color: string;
+  bg: string;
+  textColor: string;
+}) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  React.useEffect(() => {
+    Animated.spring(scale, { toValue: 1.3, friction: 6, tension: 120, useNativeDriver: true }).start();
+  }, [scale]);
+  return (
+    <Animated.View
+      style={[
+        { flexDirection: 'row', alignItems: 'center', width: 138, gap: 4, height: 30, paddingHorizontal: 10, borderRadius: 14, borderWidth: 2, borderColor: color, backgroundColor: bg },
+        { transform: [{ scale }], zIndex: 10, elevation: 6 },
+      ]}
+    >
+      <Text style={{ color, fontWeight: '800', fontSize: 14 }}>₹</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        keyboardType="numeric"
+        autoFocus
+        selectTextOnFocus
+        returnKeyType="done"
+        onSubmitEditing={onDone}
+        onBlur={onDone}
+        style={{ flex: 1, minWidth: 52, padding: 0, fontSize: 14, fontWeight: '800', color: textColor }}
+      />
+    </Animated.View>
+  );
+};
+
 interface PricingScreenProps {
   services: Service[];
   offers: Offer[];
@@ -41,6 +85,8 @@ interface PricingScreenProps {
   shopId?: string;
   shopName?: string;
   onBack: () => void;
+  /** The navigator asks this before leaving (Android back button). Returns true when it handled the press. */
+  backGuardRef?: React.MutableRefObject<(() => boolean) | null>;
   onAddCategory?: (categoryName: string) => Promise<ServiceCategory>;
   onAddService: (category: string, name: string, priceRupees: number) => Promise<void>;
   onUpdateService?: (serviceId: string, updates: { name?: string; priceRupees?: number; categoryName?: string }) => Promise<void>;
@@ -48,7 +94,7 @@ interface PricingScreenProps {
   onToggleOffer: (offerId: string) => Promise<void>;
   onRemoveOffer: (offerId: string) => Promise<void>;
   onAddOffer: (name: string, description: string, discountType: 'percentage' | 'fixed', discountValue: number) => Promise<void>;
-  onImportMenuAI?: (items: { category: string; name: string; priceRupees: number }[]) => Promise<void>;
+  onImportMenuAI?: (items: { category: string; name: string; priceRupees: number }[]) => Promise<{ added: number } | void>;
 }
 
 type DragApi = {
@@ -93,6 +139,7 @@ export const PricingScreen = ({
   shopId = '',
   shopName = 'My Salon',
   onBack,
+  backGuardRef,
   onAddCategory,
   onAddService,
   onUpdateService,
@@ -132,41 +179,147 @@ export const PricingScreen = ({
   // Inline price edit: tap a price, type, press Done (or tap away) to save
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState('');
-  const [savingPriceId, setSavingPriceId] = useState<string | null>(null);
-  const priceCommitting = useRef(false);
+  // Price changes wait here until the owner presses Save (rupees, keyed by service id)
+  const [drafts, setDrafts] = useState<Record<string, number>>({});
+  const [savingAll, setSavingAll] = useState(false);
+  const draftCount = Object.keys(drafts).length;
+  const priceOf = (svc: Service): number => drafts[svc.id] ?? Math.round(svc.price_minor / 100);
+
+  const scrollRef = useRef<ScrollView>(null);
+  const blockY = useRef<Record<string, number>>({});
+  const listY = useRef<Record<string, number>>({});
+  const tileY = useRef<Record<string, number>>({});
+  const [kbHeight, setKbHeight] = useState(0);
+  React.useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => setKbHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const setDraft = (svc: Service, value: number) => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      if (value === Math.round(svc.price_minor / 100)) delete next[svc.id];
+      else next[svc.id] = value;
+      return next;
+    });
+  };
 
   const startPriceEdit = (svc: Service) => {
-    if (!onUpdateService || savingPriceId) return;
-    priceCommitting.current = false;
+    if (!onUpdateService || savingAll) return;
+    editingPriceIdRef.current = svc.id;
     setEditingPriceId(svc.id);
-    setEditingPriceValue(String(Math.round(svc.price_minor / 100)));
+    setEditingPriceValue(String(priceOf(svc)));
   };
 
-  const commitPriceEdit = async (svc: Service) => {
-    if (priceCommitting.current || !onUpdateService) return;
-    priceCommitting.current = true;
-    const next = parseFloat(editingPriceValue);
-    const unchanged = !isNaN(next) && Math.round(next * 100) === svc.price_minor;
-    if (isNaN(next) || next <= 0) {
-      setEditingPriceId(null);
-      if (editingPriceValue.trim() !== '') Alert.alert('Invalid Price', 'Please enter a valid price in Rupees');
-      return;
-    }
-    if (unchanged) {
-      setEditingPriceId(null);
-      return;
-    }
-    setSavingPriceId(svc.id);
-    try {
-      await onUpdateService(svc.id, { priceRupees: next });
-      setEditingPriceId(null);
-    } catch (e: any) {
-      setEditingPriceId(null);
-      Alert.alert('Error', e?.message || 'Could not update price');
-    } finally {
-      setSavingPriceId(null);
-    }
+  // Keep the row being edited near the top so the keyboard never covers it. The list gets extra
+  // room at the bottom while editing, otherwise rows near the end could not scroll up far enough.
+  React.useEffect(() => {
+    if (!editingPriceId) return;
+    const svc = services.find((sv) => sv.id === editingPriceId);
+    if (!svc) return;
+    const cat = svc.category_name || 'Hair';
+    const top = (blockY.current[cat] ?? 0) + (listY.current[cat] ?? 0) + (tileY.current[svc.id] ?? 0);
+    const timer = setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, top - 90), animated: true }), 120);
+    return () => clearTimeout(timer);
+  }, [editingPriceId, kbHeight]);
+
+  const closePriceEdit = () => {
+    editingPriceIdRef.current = null;
+    setEditingPriceId(null);
+    Keyboard.dismiss();
   };
+
+  const commitPriceEdit = (svc: Service) => {
+    if (editingPriceIdRef.current !== svc.id) return; // already closed (blur after Done)
+    const next = parseFloat(editingPriceValue);
+    if (!isNaN(next) && next > 0) setDraft(svc, next);
+    else if (editingPriceValue.trim() !== '') Alert.alert('Invalid Price', 'Please enter a valid price in Rupees');
+    closePriceEdit();
+  };
+
+  const stepPrice = (svc: Service, delta: number) => {
+    if (savingAll) return;
+    setDraft(svc, Math.max(1, priceOf(svc) + delta));
+  };
+
+  /** Saves every pending price. Returns true when all of them went through. */
+  const saveAll = async (): Promise<boolean> => {
+    if (!onUpdateService || savingAll || draftCount === 0) return draftCount === 0;
+    setSavingAll(true);
+    const failed: string[] = [];
+    for (const [id, price] of Object.entries(drafts)) {
+      try {
+        await onUpdateService(id, { priceRupees: price });
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      } catch {
+        failed.push(services.find((sv) => sv.id === id)?.name || 'a service');
+      }
+    }
+    setSavingAll(false);
+    if (failed.length > 0) {
+      Alert.alert("Some prices weren't saved", `Couldn't save: ${failed.join(', ')}. Your edits are still here, try Save again.`);
+      return false;
+    }
+    return true;
+  };
+
+  const askSaveThenLeave = () => {
+    Alert.alert(
+      t('prUnsavedTitle', 'Unsaved changes'),
+      t('prUnsavedMsg', 'Do you want to save your price changes before leaving?'),
+      [
+        { text: t('prKeepEditing', 'Keep editing'), style: 'cancel' },
+        {
+          text: t('prDiscard', 'Discard'),
+          style: 'destructive',
+          onPress: () => {
+            setDrafts({});
+            onBack();
+          },
+        },
+        {
+          text: t('prSave', 'Save'),
+          onPress: async () => {
+            if (await saveAll()) onBack();
+          },
+        },
+      ]
+    );
+  };
+
+  const requestBack = () => {
+    if (editingPriceId) closePriceEdit();
+    if (draftCount > 0) askSaveThenLeave();
+    else onBack();
+  };
+
+  // let the navigator's Android back button ask the same question
+  const backHandlerRef = useRef(requestBack);
+  backHandlerRef.current = requestBack;
+  React.useEffect(() => {
+    if (!backGuardRef) return;
+    backGuardRef.current = () => {
+      if (!editingPriceIdRef.current && draftCountRef.current === 0) return false;
+      backHandlerRef.current();
+      return true;
+    };
+    return () => {
+      backGuardRef.current = null;
+    };
+  }, [backGuardRef]);
+  const editingPriceIdRef = useRef<string | null>(null);
+  editingPriceIdRef.current = editingPriceId;
+  const draftCountRef = useRef(0);
+  draftCountRef.current = draftCount;
+
   // Blinking hint next to the import button
   const aiBlink = useRef(new Animated.Value(1)).current;
   React.useEffect(() => {
@@ -246,19 +399,6 @@ export const PricingScreen = ({
   // Quick adjust: category filter, +/- stepper, raise-all shortcut
   const [isRaising, setIsRaising] = useState(false);
   const PRICE_STEP = 10;
-
-  const stepPrice = async (svc: Service, delta: number) => {
-    if (!onUpdateService || savingPriceId || isRaising) return;
-    const next = Math.max(1, Math.round(svc.price_minor / 100) + delta);
-    setSavingPriceId(svc.id);
-    try {
-      await onUpdateService(svc.id, { priceRupees: next });
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Could not update price');
-    } finally {
-      setSavingPriceId(null);
-    }
-  };
 
   const raiseAll = (kind: 'percent' | 'flat', amount: number) => {
     if (!onUpdateService || isRaising) return;
@@ -555,15 +695,14 @@ export const PricingScreen = ({
       setImportProgress(85);
       setImportStatusText(`Saving ${items.length} services to database...`);
 
-      if (onImportMenuAI) {
-        await onImportMenuAI(
-          items.map((it) => ({
-            category: it.category || 'General',
-            name: it.name,
-            priceRupees: Number(it.price) || 100,
-          }))
-        );
-      }
+      // Never invent a price: an item without a readable price is left out, not saved as 100
+      const importable = items
+        .filter((it) => Number(it.price) > 0)
+        .map((it) => ({ category: it.category || 'General', name: it.name, priceRupees: Number(it.price) }));
+      if (importable.length === 0) throw new Error('No services with a readable price were found in the menu image');
+      const result = onImportMenuAI ? await onImportMenuAI(importable) : undefined;
+      const added = result && typeof result === 'object' ? result.added : importable.length;
+      const skipped = items.length - added;
 
       setImportProgress(100);
       setImportStatusText('Done!');
@@ -572,7 +711,9 @@ export const PricingScreen = ({
         setImportProgress(0);
         Alert.alert(
           'Import Successful',
-          `Successfully imported ${items.length} services directly into your salon database!`
+          skipped > 0
+            ? `${added} new services saved to your price list. ${skipped} skipped (already in your list, or no readable price).`
+            : `${added} services saved to your price list.`
         );
       }, 600);
     } catch (err: any) {
@@ -587,7 +728,7 @@ export const PricingScreen = ({
       <View ref={rootRef} collapsable={false} pointerEvents="none" style={StyleSheet.absoluteFill} />
       <GlassBackdrop isDark={colors.isDark} />
       <View style={styles.topBar}>
-        <Button variant="icon" onPress={onBack}>
+        <Button variant="icon" onPress={requestBack}>
           <BackIcon size={18} color={colors.text} />
         </Button>
         <View style={{ flex: 1 }}>
@@ -707,7 +848,7 @@ export const PricingScreen = ({
       </View>
       )}
 
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" scrollEnabled={!scrollLocked}>
+      <ScrollView ref={scrollRef} contentContainerStyle={[styles.scrollContent, editingPriceId ? { paddingBottom: Math.max(kbHeight, 320) + 40 } : null]} keyboardShouldPersistTaps="handled" scrollEnabled={!scrollLocked}>
         {/* Progress Bar when importing */}
         {isImporting && (
           <View style={[styles.progressCard, { ...getGlass(colors.isDark).card, borderWidth: 1 }]}>
@@ -775,18 +916,19 @@ export const PricingScreen = ({
           if (catServices.length === 0) return null;
 
           return (
-            <View key={cat} style={styles.categoryBlock}>
+            <View key={cat} style={styles.categoryBlock} onLayout={(e) => { blockY.current[cat] = e.nativeEvent.layout.y; }}>
               <Text style={[styles.categoryHeader, { color: colors.accent }]}>
                 {cat.toUpperCase()} ({catServices.length})
               </Text>
-              <View style={styles.servicesList}>
+              <View style={styles.servicesList} onLayout={(e) => { listY.current[cat] = e.nativeEvent.layout.y; }}>
                 {catServices.map((s) => {
 
                   const isEditingPrice = editingPriceId === s.id;
-                  const isSavingPrice = savingPriceId === s.id;
+                  const isDrafted = drafts[s.id] !== undefined;
                   return (
                     <View
                       key={s.id}
+                      onLayout={(e) => { tileY.current[s.id] = e.nativeEvent.layout.y; }}
                       style={[
                         styles.serviceTile,
                         {
@@ -801,27 +943,21 @@ export const PricingScreen = ({
                       </Text>
 
                       {isEditingPrice ? (
-                        <View style={[styles.priceEditBox, { borderColor: colors.accent, backgroundColor: colors.bg }]}>
-                          <Text style={{ color: colors.accent, fontWeight: '700', fontSize: 14 }}>₹</Text>
-                          <TextInput
-                            value={editingPriceValue}
-                            onChangeText={(v) => setEditingPriceValue(v.replace(/[^0-9.]/g, ''))}
-                            keyboardType="numeric"
-                            autoFocus
-                            selectTextOnFocus
-                            returnKeyType="done"
-                            onSubmitEditing={() => commitPriceEdit(s)}
-                            onBlur={() => commitPriceEdit(s)}
-                            style={[styles.priceEditInput, { color: colors.text }]}
-                          />
-                        </View>
+                        <ZoomPriceInput
+                          value={editingPriceValue}
+                          onChange={(v) => setEditingPriceValue(v.replace(/[^0-9.]/g, ''))}
+                          onDone={() => commitPriceEdit(s)}
+                          color={colors.accent}
+                          bg={colors.bg}
+                          textColor={colors.text}
+                        />
                       ) : (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, width: 138 }}>
                           {onUpdateService && (
                             <TouchableOpacity
                               activeOpacity={0.7}
                               onPress={() => stepPrice(s, -PRICE_STEP)}
-                              disabled={!!savingPriceId || isRaising}
+                              disabled={savingAll || isRaising}
                               accessibilityLabel={`Decrease price of ${s.name}`}
                               style={[styles.stepBtn, { borderColor: colors.divider }]}
                             >
@@ -833,19 +969,15 @@ export const PricingScreen = ({
                             onPress={() => startPriceEdit(s)}
                             disabled={!onUpdateService}
                             accessibilityLabel={`Edit price of ${s.name}`}
-                            style={[styles.pricePill, { flex: 1, backgroundColor: colors.accent + '1F', borderColor: colors.accent + '55' }]}
+                            style={[styles.pricePill, { flex: 1, backgroundColor: colors.accent + (isDrafted ? '44' : '1F'), borderColor: isDrafted ? colors.accent : colors.accent + '55' }]}
                           >
-                            {isSavingPrice ? (
-                              <ActivityIndicator size="small" color={colors.accent} />
-                            ) : (
-                              <Text style={[styles.servicePrice, { color: colors.accent }]}>{inrFromMinor(s.price_minor)}</Text>
-                            )}
+                            <Text style={[styles.servicePrice, { color: colors.accent }]}>{inrFromMinor(priceOf(s) * 100)}</Text>
                           </TouchableOpacity>
                           {onUpdateService && (
                             <TouchableOpacity
                               activeOpacity={0.7}
                               onPress={() => stepPrice(s, PRICE_STEP)}
-                              disabled={!!savingPriceId || isRaising}
+                              disabled={savingAll || isRaising}
                               accessibilityLabel={`Increase price of ${s.name}`}
                               style={[styles.stepBtn, { borderColor: colors.divider }]}
                             >
@@ -1327,6 +1459,25 @@ export const PricingScreen = ({
           </Text>
         </Animated.View>
       )}
+
+      {pageTab === 'prices' && onUpdateService && (
+      <View style={[styles.saveBar, { backgroundColor: colors.surface, borderTopColor: colors.divider, marginBottom: Platform.OS === 'ios' ? kbHeight : 0 }]}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          disabled={draftCount === 0 || savingAll}
+          onPress={saveAll}
+          style={[styles.saveBtn, { backgroundColor: colors.accent, opacity: draftCount === 0 || savingAll ? 0.4 : 1 }]}
+        >
+          {savingAll ? (
+            <ActivityIndicator size="small" color="#0D0F14" />
+          ) : (
+            <Text style={{ color: '#0D0F14', fontWeight: '800', fontSize: 15 }}>
+              {draftCount > 0 ? `${t('prSave', 'Save')} (${draftCount})` : t('prSave', 'Save')}
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+      )}
     </SafeAreaView>
   );
 };
@@ -1412,6 +1563,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1,
     marginBottom: 1,
+  },
+  saveBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+  },
+  saveBtn: {
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   servicesList: {
     rowGap: 3,

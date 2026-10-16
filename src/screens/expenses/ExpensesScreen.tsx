@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,11 @@ import {
   Platform,
   Keyboard,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Modal } from '../../components/common/KeyboardAwareModal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../../theme/ThemeContext';
@@ -17,9 +21,9 @@ import { GlassBackdrop } from '../../components/common/GlassBackdrop';
 import { getGlass } from '../../theme/glass';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { Button } from '../../components/common/Button';
-import { BackIcon, CrossIcon, EditIcon, TrashIcon } from '../../components/common/SvgIcons';
+import { BackIcon, CrossIcon, EditIcon, MoreVerticalIcon, TrashIcon } from '../../components/common/SvgIcons';
 import { Chip } from '../../components/common/Chip';
-import { Expense, Period, StaffMember } from '../../types/domain';
+import { Expense, StaffMember } from '../../types/domain';
 import { inrFromMinor } from '../../utils/format';
 import { cleanAmountInput } from '../../utils/amountInput';
 import { countsInProfit, splitExpenseTotals } from '../../utils/expenseProfit';
@@ -29,6 +33,15 @@ import { EXPENSE_CATEGORIES } from '../../repositories/expenseRepository';
 import { radii } from '../../theme/spacing';
 import { Alert } from 'react-native';
 import { usePullRefresh } from '../../hooks/usePullRefresh';
+import {
+  ExpensePeriod,
+  buildExpenseCsv,
+  buildExpenseHtml,
+  expenseRange,
+  expensesInRange,
+  groupExpenses,
+  parseDay,
+} from '../../utils/expenseReport';
 
 interface ExpensesScreenProps {
   onRefresh?: () => Promise<void>;
@@ -41,6 +54,10 @@ interface ExpensesScreenProps {
   staff?: StaffMember[];
   /** Owner only: may link an expense to a team member. */
   canTagStylist?: boolean;
+  /** Free plan past the sales limit: downloads are locked, like the Reports screen. */
+  isDownloadLocked?: boolean;
+  shopName?: string;
+  onUpgradePlan?: () => void;
   onBack: () => void;
   onAddExpense: (
     category: string,
@@ -67,6 +84,9 @@ export const ExpensesScreen = ({
   canChooseProfit = true,
   staff = [],
   canTagStylist = true,
+  isDownloadLocked = false,
+  shopName = 'My Salon',
+  onUpgradePlan,
   onBack,
   onAddExpense,
   onEditExpense,
@@ -75,7 +95,15 @@ export const ExpensesScreen = ({
   const pullRefresh = usePullRefresh(onRefresh);
   const { colors } = useTheme();
   const { t } = useLanguage();
-  const [period, setPeriod] = useState<Period>('Day');
+  const [period, setPeriod] = useState<ExpensePeriod>('Day');
+  const todayText = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [customStart, setCustomStart] = useState(todayText);
+  const [customEnd, setCustomEnd] = useState(todayText);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
@@ -115,8 +143,66 @@ export const ExpensesScreen = ({
       : member.name;
   };
 
-  const totalExpenseMinor = expenses.reduce((acc, e) => acc + e.amount_minor, 0);
-  const excludedMinor = splitExpenseTotals(expenses).excludedMinor;
+  const range = useMemo(() => expenseRange(period, customStart, customEnd), [period, customStart, customEnd]);
+  const periodExpenses = useMemo(() => (range ? expensesInRange(expenses, range) : []), [expenses, range]);
+  const groupRows = useMemo(() => groupExpenses(periodExpenses, staff), [periodExpenses, staff]);
+  const totalExpenseMinor = periodExpenses.reduce((acc, e) => acc + e.amount_minor, 0);
+  const excludedMinor = splitExpenseTotals(periodExpenses).excludedMinor;
+
+  const applyCustom = () => {
+    if (!parseDay(customStart) || !parseDay(customEnd)) {
+      Alert.alert('Invalid date', 'Enter dates as YYYY-MM-DD, for example 2026-10-15.');
+      return;
+    }
+    if (!expenseRange('Custom', customStart, customEnd)) {
+      Alert.alert('Invalid range', 'The start date must be on or before the end date.');
+      return;
+    }
+    setPeriod('Custom');
+    setCustomOpen(false);
+  };
+
+  const exportReport = async (kind: 'csv' | 'pdf') => {
+    if (!range || exporting || periodExpenses.length === 0) return;
+    if (isDownloadLocked) {
+      Alert.alert(t('smUpgradeTitle', 'Upgrade to Pro'), t('smUpgradeMsg', 'Upgrade to Pro to download reports.'), [
+        { text: t('cancel', 'Cancel'), style: 'cancel' },
+        { text: t('smUpgradeNow', 'Upgrade Now'), onPress: () => onUpgradePlan && onUpgradePlan() },
+      ]);
+      return;
+    }
+    setExporting(kind);
+    try {
+      const meta = { shopName, rangeLabel: range.label, generatedOn: new Date().toLocaleString('en-IN') };
+      const cleanShop = shopName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const targetUri = `${FileSystem.cacheDirectory}Expense_Report_${cleanShop}_${Date.now()}.${kind === 'csv' ? 'csv' : 'pdf'}`;
+      if (kind === 'csv') {
+        await FileSystem.writeAsStringAsync(targetUri, buildExpenseCsv(periodExpenses, staff, meta), {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      } else {
+        const { uri, base64 } = await Print.printToFileAsync({ html: buildExpenseHtml(periodExpenses, staff, meta), base64: true });
+        if (base64) {
+          await FileSystem.writeAsStringAsync(targetUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+        } else {
+          await FileSystem.copyAsync({ from: uri, to: targetUri });
+        }
+      }
+      if (!(await Sharing.isAvailableAsync().catch(() => false))) {
+        Alert.alert(t('smExportFailed', 'Could not export the report'), t('smShareUnavailable', 'File sharing is not available on this device.'));
+        return;
+      }
+      await Sharing.shareAsync(targetUri, {
+        mimeType: kind === 'csv' ? 'text/csv' : 'application/pdf',
+        dialogTitle: `${shopName} - ${range.label}`,
+        UTI: kind === 'csv' ? 'public.comma-separated-values-text' : 'com.adobe.pdf',
+      });
+    } catch (e: unknown) {
+      Alert.alert(t('smExportFailed', 'Could not export the report'), e instanceof Error ? e.message : '');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   const handleOpenAdd = () => {
     setEditingExpense(null);
@@ -142,6 +228,8 @@ export const ExpensesScreen = ({
     setStylistListOpen(false);
     setSheetOpen(true);
   };
+
+  const [menuFor, setMenuFor] = useState<Expense | null>(null);
 
   const handleDelete = (e: Expense) => {
     Alert.alert(
@@ -202,13 +290,13 @@ export const ExpensesScreen = ({
         </View>
 
         <View style={[styles.periodTabsRow, { borderColor: colors.divider }]}>
-          {(todayOnly ? (['Day'] as const) : (['Day', 'Week', 'Month'] as const)).map((p) => {
+          {(todayOnly ? (['Day'] as const) : (['Day', 'Week', 'Month', 'Custom'] as const)).map((p) => {
             const isSelected = period === p;
             return (
               <TouchableOpacity
                 key={p}
                 activeOpacity={0.8}
-                onPress={() => setPeriod(p)}
+                onPress={() => (p === 'Custom' ? setCustomOpen(true) : setPeriod(p))}
                 style={[
                   styles.periodTab,
                   {
@@ -226,7 +314,7 @@ export const ExpensesScreen = ({
                     },
                   ]}
                 >
-                  {p === 'Day' ? t('day') : p === 'Week' ? t('week') : t('month')}
+                  {p === 'Day' ? t('day') : p === 'Week' ? t('week') : p === 'Month' ? t('month') : t('slCustom', 'Custom')}
                 </Text>
               </TouchableOpacity>
             );
@@ -241,7 +329,7 @@ export const ExpensesScreen = ({
             {inrFromMinor(totalExpenseMinor)}
           </Text>
           <Text style={[styles.entriesCount, { color: colors.textDim }]}>
-            {expenses.length} entries
+            {periodExpenses.length} entries
           </Text>
         </View>
         {excludedMinor > 0 && (
@@ -250,9 +338,50 @@ export const ExpensesScreen = ({
           </Text>
         )}
 
+        {range && period === 'Custom' && (
+          <Text style={[styles.entriesCount, { color: colors.textDim, marginBottom: 8 }]}>{range.label}</Text>
+        )}
+
+        {/* Who / what the money went to */}
+        {groupRows.length > 0 && (
+          <View style={[styles.expenseItem, { backgroundColor: colors.surface, flexDirection: 'column', alignItems: 'stretch', marginBottom: 12 }]}>
+            <Text style={{ color: colors.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 6 }}>
+              {t('exSpentOn', 'Spent on')}
+            </Text>
+            {groupRows.map((g) => (
+              <View key={g.key} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 }}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>{g.label}</Text>
+                  <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                    {g.count} {g.count === 1 ? 'entry' : 'entries'}
+                  </Text>
+                </View>
+                <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>{inrFromMinor(g.totalMinor)}</Text>
+              </View>
+            ))}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+              {(['csv', 'pdf'] as const).map((kind) => (
+                <TouchableOpacity
+                  key={kind}
+                  activeOpacity={0.8}
+                  disabled={!!exporting}
+                  onPress={() => exportReport(kind)}
+                  style={{ flex: 1, paddingVertical: 9, borderRadius: radii.md, borderWidth: 1, borderColor: colors.accent, alignItems: 'center' }}
+                >
+                  {exporting === kind ? (
+                    <ActivityIndicator size="small" color={colors.accent} />
+                  ) : (
+                    <Text style={{ color: colors.accent, fontWeight: '700', fontSize: 13 }}>{kind === 'csv' ? 'Excel' : 'PDF'}</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
         {/* Expenses List */}
         <View style={styles.list}>
-          {expenses.map((e) => (
+          {periodExpenses.map((e) => (
             <View
               key={e.id}
               style={[
@@ -296,19 +425,85 @@ export const ExpensesScreen = ({
                 <Text style={[styles.expenseAmt, { color: colors.text }]}>
                   {inrFromMinor(e.amount_minor)}
                 </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 8 }}>
-                  <TouchableOpacity onPress={() => handleOpenEdit(e)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <EditIcon size={15} color={colors.accent} />
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => handleDelete(e)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <TrashIcon size={15} color="#EF4444" />
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                  onPress={() => setMenuFor(e)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={{ marginTop: 8 }}
+                  accessibilityLabel="More options"
+                >
+                  <MoreVerticalIcon size={18} color={colors.textMuted} />
+                </TouchableOpacity>
               </View>
             </View>
           ))}
         </View>
       </ScrollView>
+
+      {/* Custom date range */}
+      <Modal visible={customOpen} transparent animationType="fade" onRequestClose={() => setCustomOpen(false)}>
+        <View style={styles.menuOverlay}>
+          <View style={[styles.menuBox, { backgroundColor: colors.surface, borderColor: colors.divider, width: '88%', padding: 18 }]}>
+            <Text style={{ color: colors.text, fontSize: 17, fontWeight: '700', marginBottom: 4 }}>Custom Date Range</Text>
+            <Text style={{ color: colors.textDim, fontSize: 12, marginBottom: 12 }}>Enter dates as YYYY-MM-DD</Text>
+            {([['From', customStart, setCustomStart], ['To', customEnd, setCustomEnd]] as const).map(([label, value, setter]) => (
+              <View key={label} style={{ marginBottom: 12 }}>
+                <Text style={{ color: colors.textDim, fontSize: 12, marginBottom: 4 }}>{label}</Text>
+                <TextInput
+                  value={value}
+                  onChangeText={setter}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.textMuted}
+                  style={{ color: colors.text, borderColor: colors.divider, borderWidth: 1, borderRadius: radii.md, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: colors.bg }}
+                />
+              </View>
+            ))}
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={{ flex: 1, paddingVertical: 11, borderRadius: radii.md, borderWidth: 1, borderColor: colors.divider, alignItems: 'center' }}
+                onPress={() => setCustomOpen(false)}
+              >
+                <Text style={{ color: colors.textDim, fontWeight: '600' }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1.4, paddingVertical: 11, borderRadius: radii.md, backgroundColor: colors.accent, alignItems: 'center' }}
+                onPress={applyCustom}
+              >
+                <Text style={{ color: '#0D0F14', fontWeight: '700' }}>Apply Range</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Three-dot menu: edit / delete */}
+      <Modal visible={!!menuFor} transparent animationType="fade" onRequestClose={() => setMenuFor(null)}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuFor(null)}>
+          <View style={[styles.menuBox, { backgroundColor: colors.surface, borderColor: colors.divider }]}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                if (target) handleOpenEdit(target);
+              }}
+            >
+              <EditIcon size={16} color={colors.accent} />
+              <Text style={{ color: colors.text, fontWeight: '600' }}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                if (target) handleDelete(target);
+              }}
+            >
+              <TrashIcon size={16} color="#EF4444" />
+              <Text style={{ color: '#EF4444', fontWeight: '600' }}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Bottom bar with Add expense button */}
       <View
@@ -712,8 +907,29 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 24,
     borderTopWidth: 1,
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  menuBox: {
+    minWidth: 180,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 6,
+    elevation: 6,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
   },
   modalOverlay: {
     flex: 1,

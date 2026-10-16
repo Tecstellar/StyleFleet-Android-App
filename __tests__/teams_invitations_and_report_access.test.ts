@@ -208,7 +208,7 @@ describe('Teams, Stylist Invitations & Report Access Suite', () => {
       team: false,
       reminders: true,
       profile: false,
-      expensesHistory: false,
+      expensesHistory: false, reportsHistory: false,
       shareBills: false,
     });
   });
@@ -223,7 +223,7 @@ describe('Teams, Stylist Invitations & Report Access Suite', () => {
       team: false,
       reminders: true,
       profile: false,
-      expensesHistory: false,
+      expensesHistory: false, reportsHistory: false,
       shareBills: false,
     };
 

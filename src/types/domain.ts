@@ -62,6 +62,8 @@ export interface StylistPermissions {
   profile: boolean;
   /** With `expenses` on: may also see expenses from before today. Off = today only. */
   expensesHistory: boolean;
+  /** With `reports` on: may see the whole shop's reports and history. Off = only their own sales from today. */
+  reportsHistory: boolean;
   /** May send a bill to a customer (WhatsApp / PDF). */
   shareBills: boolean;
 }
@@ -76,6 +78,7 @@ export const DEFAULT_STYLIST_PERMISSIONS: StylistPermissions = {
   reminders: true,
   profile: false,
   expensesHistory: false,
+  reportsHistory: false,
   shareBills: false,
 };
 

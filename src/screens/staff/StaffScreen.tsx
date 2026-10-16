@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { openWhatsAppPreferred } from '../../services/whatsappLauncher';
 import {
   View,
   Text,
@@ -197,20 +198,7 @@ export const StaffScreen = ({
       `${STYLEFLEET_PLAY_STORE_URL}\n\n` +
       `If the link doesn't open: open StyleFleet, tick "Login as Stylist" and enter this mobile number: ${cleanPhone}`;
 
-    const nativeUrl = `whatsapp://send?phone=91${cleanPhone}&text=${encodeURIComponent(message)}`;
-    const webUrl = `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(message)}`;
-
-    Linking.canOpenURL(nativeUrl)
-      .then((supported) => {
-        if (supported) {
-          Linking.openURL(nativeUrl).catch(() => Linking.openURL(webUrl));
-        } else {
-          Linking.openURL(webUrl);
-        }
-      })
-      .catch(() => {
-        Linking.openURL(webUrl);
-      });
+    openWhatsAppPreferred(cleanPhone, message).catch((e: unknown) => Alert.alert('WhatsApp', e instanceof Error ? e.message : 'Could not open WhatsApp.'));
 
     if (shopId && s.id) {
       try {

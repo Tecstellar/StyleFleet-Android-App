@@ -82,8 +82,8 @@ export const generateInvoiceHtml = ({
   const monogram = generateInvoicePrefixFromShopName(shopName);
 
   // Formatted dates
-  const invoiceDateStr = formatInvoiceDate(bill.issued_at || bill.created_at);
-  const appointmentDateStr = formatInvoiceDate(bill.issued_at || bill.created_at);
+  const invoiceDateStr = formatInvoiceDate(bill.created_at || bill.issued_at);
+  const appointmentDateStr = formatInvoiceDate(bill.created_at || bill.issued_at);
 
   // Formatted phones
   const customerPhoneFormatted = formatPhoneNumber(customerPhone);

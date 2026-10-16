@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { openWhatsAppPreferred } from '../../services/whatsappLauncher';
 import {
   View,
   Text,
@@ -169,20 +170,7 @@ export const FestivalOffersModal = ({
       offerValidity
     );
 
-    const nativeUrl = `whatsapp://send?phone=91${cleanPhone}&text=${encodeURIComponent(personalizedMsg)}`;
-    const webUrl = `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(personalizedMsg)}`;
-
-    Linking.canOpenURL(nativeUrl)
-      .then((supported) => {
-        if (supported) {
-          Linking.openURL(nativeUrl).catch(() => Linking.openURL(webUrl));
-        } else {
-          Linking.openURL(webUrl);
-        }
-      })
-      .catch(() => {
-        Linking.openURL(webUrl);
-      });
+    openWhatsAppPreferred(cleanPhone, personalizedMsg).catch((e: unknown) => Alert.alert('WhatsApp', e instanceof Error ? e.message : 'Could not open WhatsApp.'));
 
     setSentCustomerIds((prev) => new Set(prev).add(customer.id));
   };

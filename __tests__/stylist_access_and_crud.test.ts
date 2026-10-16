@@ -107,7 +107,7 @@ describe('Stylist Access, Permissions & CRUD QA Suite', () => {
         team: false,
         reminders: true,
         profile: false,
-        expensesHistory: false,
+        expensesHistory: false, reportsHistory: false,
         shareBills: false,
       };
 
@@ -226,7 +226,7 @@ describe('Stylist Access, Permissions & CRUD QA Suite', () => {
         team: false,     // Restricted
         reminders: true,
         profile: false,  // Restricted
-        expensesHistory: false,
+        expensesHistory: false, reportsHistory: false,
         shareBills: false,
       };
 

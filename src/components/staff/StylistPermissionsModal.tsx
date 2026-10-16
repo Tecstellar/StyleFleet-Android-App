@@ -43,6 +43,7 @@ const LABELS: Record<PermissionKey, { label: string; sub: string; labelFallback:
   team: { label: 'spTeam', sub: 'spTeamSub', labelFallback: 'Team', subFallback: 'Manage stylists and invites' },
   profile: { label: 'spProfile', sub: 'spProfileSub', labelFallback: 'Shop profile', subFallback: 'Edit shop details and settings' },
   expensesHistory: { label: 'spExpensesHistory', sub: 'spExpensesHistorySub', labelFallback: 'Past expenses', subFallback: 'Needs Expenses. Off: only expenses from today are shown' },
+  reportsHistory: { label: 'spReportsHistory', sub: 'spReportsHistorySub', labelFallback: 'Full reports', subFallback: 'Needs Reports. Off: only their own sales from today are shown' },
   shareBills: { label: 'spShareBills', sub: 'spShareBillsSub', labelFallback: 'Share bills', subFallback: 'Send bills to customers on WhatsApp or as PDF' },
 };
 

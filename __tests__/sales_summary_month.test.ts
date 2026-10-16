@@ -90,7 +90,7 @@ describe('Excel (CSV) export', () => {
     expect(lines[0]).toBe('"StyleFleet Sales Summary"');
     expect(csv).toContain('"Shop Name","Glow & Co"');
     expect(csv).toContain('"Month","October 2026"');
-    expect(csv).toContain('"Date","Customer","Services","Price (INR)"');
+    expect(csv).toContain('"Date","Customer","Services","Payment Mode","Price (INR)"');
   });
 
   it('has one row per bill with the price in rupees', () => {

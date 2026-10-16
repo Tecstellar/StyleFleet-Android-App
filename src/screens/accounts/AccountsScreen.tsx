@@ -426,7 +426,7 @@ export const AccountsScreen = ({
   const cardBorderWidth = colors.isDark ? 1.2 : 1.5;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bg }]}>
+    <SafeAreaView edges={['top']} style={[styles.safeArea, { backgroundColor: colors.bg }]}>
       <GlassBackdrop isDark={colors.isDark} />
       <View style={styles.header}>
         <View style={styles.headerTitleRow}>

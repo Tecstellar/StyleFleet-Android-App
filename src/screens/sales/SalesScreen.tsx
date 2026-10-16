@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
+  Modal,
   TouchableOpacity,
   ScrollView,
   StyleSheet,
@@ -51,7 +52,7 @@ export const SalesScreen = ({
 
   // Helper to check if bill belongs to today's local calendar date
   const isTodayBill = (b: Bill): boolean => {
-    const dateStr = b.issued_at || b.created_at;
+    const dateStr = b.created_at || b.issued_at;
     if (!dateStr) return false;
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return false;
@@ -65,9 +66,6 @@ export const SalesScreen = ({
 
   // Stylists only see today's sales; owners see full history
   const visibleBills = React.useMemo(() => {
-    if (isStylist) {
-      return bills.filter(isTodayBill);
-    }
     return bills;
   }, [bills, isStylist]);
 
@@ -126,7 +124,7 @@ export const SalesScreen = ({
     // Use full bills array to compute yesterday metrics (for owner view)
     const yBills = bills.filter((b) => {
       if (!b || b.status === 'deleted') return false;
-      const dateStr = b.issued_at || b.created_at;
+      const dateStr = b.created_at || b.issued_at;
       if (!dateStr) return false;
       const t = new Date(dateStr).getTime();
       return !isNaN(t) && t >= yesterdayStart && t <= yesterdayEnd;
@@ -228,6 +226,25 @@ export const SalesScreen = ({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   };
 
+  // Stylists: today by default, or any past day picked under "Custom"
+  const [customDay, setCustomDay] = useState<string | null>(null);
+  const [dayPickerOpen, setDayPickerOpen] = useState(false);
+  const todayKey = billDayKey({ created_at: new Date().toISOString() } as Bill);
+  const shownBills = isStylist ? activeBills.filter((b) => billDayKey(b) === (customDay ?? todayKey)) : activeBills;
+  const dayRows = React.useMemo(() => {
+    const map = new Map<string, { count: number; total: number }>();
+    for (const b of activeBills) {
+      const k = billDayKey(b);
+      if (!k) continue;
+      const r = map.get(k) || { count: 0, total: 0 };
+      r.count += 1;
+      r.total += b.total_minor || 0;
+      map.set(k, r);
+    }
+    return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [activeBills]);
+  const customRow = customDay ? dayRows.find(([k]) => k === customDay)?.[1] : undefined;
+
   const dayHeadingLabel = (key: string): string => {
     const [y, m, d] = key.split('-').map(Number);
     const date = new Date(y, m - 1, d);
@@ -252,7 +269,7 @@ export const SalesScreen = ({
   });
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bg }]}>
+    <SafeAreaView edges={['top']} style={[styles.safeArea, { backgroundColor: colors.bg }]}>
       <GlassBackdrop isDark={colors.isDark} />
       {/* Top Header */}
       <View style={styles.header}>
@@ -264,15 +281,19 @@ export const SalesScreen = ({
         </View>
 
         {/* Period Selector Tabs - hidden for stylists */}
-        {!isStylist && (
+        {(
           <View style={[styles.periodTabsRow, { borderColor: glass.card.borderColor, backgroundColor: glass.card.backgroundColor }]}>
-            {(['Day', 'Week', 'Month'] as const).map((p) => {
-              const isSelected = period === p;
+            {(isStylist ? (['Day', 'Custom'] as const) : (['Day', 'Week', 'Month'] as const)).map((p) => {
+              const isSelected = isStylist ? (p === 'Custom' ? !!customDay : !customDay) : period === p;
               return (
                 <TouchableOpacity
                   key={p}
                   activeOpacity={0.8}
-                  onPress={() => setPeriod(p)}
+                  onPress={() => {
+                    if (!isStylist) setPeriod(p as Period);
+                    else if (p === 'Custom') setDayPickerOpen(true);
+                    else setCustomDay(null);
+                  }}
                   style={[
                     styles.periodTab,
                     {
@@ -289,7 +310,7 @@ export const SalesScreen = ({
                       },
                     ]}
                   >
-                    {p === 'Day' ? t('today', 'Today') : t(p.toLowerCase(), p)}
+                    {p === 'Day' ? t('today', 'Today') : p === 'Custom' ? t('slCustom', 'Custom') : t(p.toLowerCase(), p)}
                   </Text>
                 </TouchableOpacity>
               );
@@ -299,6 +320,16 @@ export const SalesScreen = ({
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={pullRefresh}>
+        {isStylist && customDay && (
+          <View style={[styles.heroCard, { backgroundColor: glass.card.backgroundColor, borderColor: glass.card.borderColor }]}>
+            <Text style={[styles.totalAmount, { color: colors.text }]}>{inrFromMinor(customRow?.total || 0)}</Text>
+            <Text style={[styles.subLabel, { color: colors.textDim }]}>
+              {dayHeadingLabel(customDay)} · {fmt(t(customRow?.count === 1 ? 'smBill' : 'smBills', '{n} bills'), { n: customRow?.count || 0 })}
+            </Text>
+          </View>
+        )}
+        {!customDay && (
+        <>
         <View style={[styles.heroCard, { backgroundColor: glass.card.backgroundColor, borderColor: glass.card.borderColor }]}>
         {/* Total & Delta */}
         <View style={styles.totalRow}>
@@ -487,6 +518,9 @@ export const SalesScreen = ({
           </View>
         </View>
 
+        </>
+        )}
+
         {/* Bills list header with Tabs */}
         <View style={[styles.billsListHeader, { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -503,9 +537,9 @@ export const SalesScreen = ({
               }}
             >
               <Text style={{ color: activeTabSub === 'active' ? colors.accent : colors.textDim, fontWeight: '600', fontSize: 13 }}>
-                {isStylist
-                  ? tf('slTodayBillsCount', "Today's Bills ({n})", { n: activeBills.length })
-                  : tf('slRecentBills', 'Recent Bills ({n})', { n: activeBills.length })}
+                {isStylist && !customDay
+                  ? tf('slTodayBillsCount', "Today's Bills ({n})", { n: shownBills.length })
+                  : tf('slRecentBills', 'Recent Bills ({n})', { n: shownBills.length })}
               </Text>
             </TouchableOpacity>
 
@@ -595,7 +629,7 @@ export const SalesScreen = ({
               ))
             )
           ) : (
-            activeBills.length === 0 ? (
+            shownBills.length === 0 ? (
               <View style={styles.emptyBillsBox}>
                 <Text style={[styles.emptyBillsTitle, { color: colors.text }]}>
                   {t('noBillsYet', 'No bills recorded yet')}
@@ -605,9 +639,9 @@ export const SalesScreen = ({
                 </Text>
               </View>
             ) : (
-              activeBills.map((b, index) => {
+              shownBills.map((b, index) => {
                 const dayKey = billDayKey(b);
-                const showDayHeading = dayKey !== '' && (index === 0 || dayKey !== billDayKey(activeBills[index - 1]));
+                const showDayHeading = dayKey !== '' && (index === 0 || dayKey !== billDayKey(shownBills[index - 1]));
                 const isPartiallyPaid = b.status === 'partially_paid';
                 const isPending = b.status === 'pending';
                 const dueMinor = b.due_amount_minor ?? (isPending ? b.total_minor : 0);
@@ -693,6 +727,44 @@ export const SalesScreen = ({
           )}
         </View>
       </ScrollView>
+
+      {/* Stylist: pick a past day to see what they made */}
+      <Modal visible={dayPickerOpen} transparent animationType="fade" onRequestClose={() => setDayPickerOpen(false)}>
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}
+          activeOpacity={1}
+          onPress={() => setDayPickerOpen(false)}
+        >
+          <View style={{ backgroundColor: colors.surface, borderRadius: 16, padding: 16, maxHeight: '75%' }}>
+            <Text style={{ color: colors.text, fontSize: 17, fontWeight: '700', marginBottom: 10 }}>
+              {t('slPickDay', 'Pick a day')}
+            </Text>
+            <ScrollView>
+              {dayRows.length === 0 ? (
+                <Text style={{ color: colors.textDim, paddingVertical: 12 }}>{t('noBillsYet', 'No bills recorded yet')}</Text>
+              ) : (
+                dayRows.map(([key, row]) => (
+                  <TouchableOpacity
+                    key={key}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setCustomDay(key === todayKey ? null : key);
+                      setDayPickerOpen(false);
+                    }}
+                    style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.divider }}
+                  >
+                    <View>
+                      <Text style={{ color: colors.text, fontWeight: '600' }}>{dayHeadingLabel(key)}</Text>
+                      <Text style={{ color: colors.textDim, fontSize: 12 }}>{fmt(t(row.count === 1 ? 'smBill' : 'smBills', '{n} bills'), { n: row.count })}</Text>
+                    </View>
+                    <Text style={{ color: colors.accent, fontWeight: '700' }}>{inrFromMinor(row.total)}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Floating Action Button */}
       <TouchableOpacity

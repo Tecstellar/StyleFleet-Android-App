@@ -21,7 +21,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useTheme } from '../../theme/ThemeContext';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { Button } from '../../components/common/Button';
-import { BackIcon, ChatIcon, EditIcon, TrashIcon, WhatsAppIcon } from '../../components/common/SvgIcons';
+import { BackIcon, ChatIcon, EditIcon, MoreVerticalIcon, TrashIcon, WhatsAppIcon } from '../../components/common/SvgIcons';
 import { Bill, SocialLinks } from '../../types/domain';
 import { inrFromMinor, getInitials } from '../../utils/format';
 import { radii } from '../../theme/spacing';
@@ -31,6 +31,7 @@ import {
   InstalledWhatsAppApp,
   getInstalledWhatsAppApps,
   openWhatsAppChat,
+  setPreferredWhatsApp,
   whatsAppChoiceFor,
 } from '../../services/whatsappLauncher';
 import { WhatsAppAppPickerModal } from '../../components/common/WhatsAppAppPickerModal';
@@ -86,6 +87,8 @@ export const InvoiceScreen = ({
   const allowShare = canShareBills ?? !(isStylist || userRole === 'stylist');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [isSendingWhatsApp, setIsSendingWhatsApp] = useState(false);
   const [pendingWhatsApp, setPendingWhatsApp] = useState<{
     phone: string;
@@ -363,6 +366,7 @@ export const InvoiceScreen = ({
   const handlePickWhatsApp = async (app: InstalledWhatsAppApp) => {
     const pending = pendingWhatsApp;
     setPendingWhatsApp(null);
+    setPreferredWhatsApp(app.id);
     if (!pending) return;
     try {
       await openWhatsAppChat(pending.phone, pending.message, app);
@@ -478,7 +482,7 @@ export const InvoiceScreen = ({
         <Text style={[styles.title, { color: colors.text }]}>{t('invoice')}</Text>
 
         <View style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          {isDeleted ? (
+          {isDeleted && (
             <TouchableOpacity
               onPress={handleRestore}
               activeOpacity={0.8}
@@ -486,46 +490,30 @@ export const InvoiceScreen = ({
             >
               <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '600' }}>Restore</Text>
             </TouchableOpacity>
-          ) : (
-            <>
-              {onEditBill && (
-                <TouchableOpacity
-                  onPress={() => onEditBill(bill)}
-                  activeOpacity={0.8}
-                  style={{ padding: 6, borderRadius: radii.md, borderWidth: 1, borderColor: colors.accent, justifyContent: 'center', alignItems: 'center' }}
-                  accessibilityLabel="Edit Bill"
-                >
-                  <EditIcon size={16} color={colors.accent} />
-                </TouchableOpacity>
-              )}
-              {onDeleteBill && (
-                <TouchableOpacity
-                  onPress={handleDelete}
-                  activeOpacity={0.8}
-                  style={{ padding: 6, borderRadius: radii.md, borderWidth: 1, borderColor: '#EF4444', justifyContent: 'center', alignItems: 'center' }}
-                  accessibilityLabel="Delete Bill"
-                >
-                  <TrashIcon size={16} color="#EF4444" />
-                </TouchableOpacity>
-              )}
-            </>
           )}
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <View
-              style={[
-                styles.invoiceBadge,
-                {
-                  backgroundColor: isDeleted ? 'rgba(239, 68, 68, 0.15)' : colors.accent900,
-                  borderColor: isDeleted ? '#EF4444' : colors.accent,
-                },
-              ]}
-            >
-              <Text style={[styles.invoiceBadgeText, { color: isDeleted ? '#EF4444' : colors.accent200 }]}>
-                {isDeleted ? 'DELETED' : bill.invoice_number}
-              </Text>
-            </View>
+          <View
+            style={[
+              styles.invoiceBadge,
+              {
+                backgroundColor: isDeleted ? 'rgba(239, 68, 68, 0.15)' : colors.accent900,
+                borderColor: isDeleted ? '#EF4444' : colors.accent,
+              },
+            ]}
+          >
+            <Text style={[styles.invoiceBadgeText, { color: isDeleted ? '#EF4444' : colors.accent200 }]}>
+              {isDeleted ? 'DELETED' : bill.invoice_number}
+            </Text>
           </View>
+          {!isDeleted && (onEditBill || onDeleteBill) && (
+            <TouchableOpacity
+              onPress={() => setMenuOpen(true)}
+              activeOpacity={0.8}
+              style={{ padding: 6 }}
+              accessibilityLabel="More options"
+            >
+              <MoreVerticalIcon size={20} color={colors.text} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -835,28 +823,81 @@ export const InvoiceScreen = ({
 
         {/* Action Buttons */}
         <View style={styles.actionsRow}>
-          {allowShare && (
-            <Button
-              label={isSendingWhatsApp ? 'Preparing PDF...' : 'WhatsApp'}
-              icon={<WhatsAppIcon size={16} color="#FFFFFF" />}
-              onPress={handleWhatsApp}
-              disabled={isSendingWhatsApp}
-              style={{ flex: 1.5 }}
-            />
-          )}
           <Button
-            label={isPrinting ? '...' : 'Print'}
-            variant="secondary"
+            label={isSendingWhatsApp ? 'Preparing PDF...' : isPrinting ? '...' : 'Share'}
             disabled={isPrinting || isSendingWhatsApp}
-            onPress={handlePrint}
-            style={{ flex: allowShare ? undefined : 1, paddingHorizontal: 16 }}
+            onPress={() => setShareOpen(true)}
+            style={{ flex: 1.5 }}
           />
+          <Button label="Close" variant="secondary" onPress={onBack} style={{ flex: 1 }} />
         </View>
 
         <Text style={[styles.footnote, { color: colors.textSubtle }]}>
           Official invoice generated with StyleFleet.
         </Text>
       </ScrollView>
+
+      {/* Three-dot menu: edit / delete */}
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuOpen(false)}>
+          <View style={[styles.menuBox, { backgroundColor: colors.surface, borderColor: colors.divider }]}>
+            {onEditBill && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setMenuOpen(false);
+                  onEditBill(bill);
+                }}
+              >
+                <EditIcon size={16} color={colors.accent} />
+                <Text style={{ color: colors.text, fontWeight: '600' }}>Edit</Text>
+              </TouchableOpacity>
+            )}
+            {onDeleteBill && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setMenuOpen(false);
+                  handleDelete();
+                }}
+              >
+                <TrashIcon size={16} color="#EF4444" />
+                <Text style={{ color: '#EF4444', fontWeight: '600' }}>Delete</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Share: WhatsApp or Print */}
+      <Modal visible={shareOpen} transparent animationType="fade" onRequestClose={() => setShareOpen(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShareOpen(false)}>
+          <View style={[styles.modalBox, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Share invoice</Text>
+            {allowShare && (
+              <Button
+                label="WhatsApp"
+                icon={<WhatsAppIcon size={16} color="#FFFFFF" />}
+                onPress={() => {
+                  setShareOpen(false);
+                  handleWhatsApp();
+                }}
+                style={{ marginTop: 8 }}
+              />
+            )}
+            <Button
+              label="Print"
+              variant="secondary"
+              onPress={() => {
+                setShareOpen(false);
+                handlePrint();
+              }}
+              style={{ marginTop: 8 }}
+            />
+            <Button label="Close" variant="secondary" onPress={() => setShareOpen(false)} style={{ marginTop: 8 }} />
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       <WhatsAppAppPickerModal
         visible={!!pendingWhatsApp}
@@ -1119,6 +1160,27 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 11.5,
     lineHeight: 16,
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'flex-end',
+    paddingTop: 70,
+    paddingRight: 12,
+  },
+  menuBox: {
+    minWidth: 150,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 6,
+    elevation: 6,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   modalOverlay: {
     flex: 1,

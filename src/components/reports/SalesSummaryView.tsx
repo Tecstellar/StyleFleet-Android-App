@@ -8,8 +8,8 @@ import { useLanguage } from '../../i18n/LanguageContext';
 import { fmt, localeFor } from '../../i18n/format';
 import { getGlass } from '../../theme/glass';
 import { inrFromMinor } from '../../utils/format';
-import { Bill, Expense } from '../../types/domain';
-import { getSummaryYears, getSummaryMonths, getSummaryMonthDetail, dateKeyOf } from '../../utils/salesSummary';
+import { Bill, Expense, StaffMember } from '../../types/domain';
+import { getSummaryYears, getSummaryMonths, getSummaryMonthDetail, getStylistMonthBreakdown, dateKeyOf } from '../../utils/salesSummary';
 import { buildMonthCsv, buildMonthHtml } from '../../utils/salesSummaryExport';
 import { ExcelIcon, PdfIcon } from '../common/SvgIcons';
 import { radii } from '../../theme/spacing';
@@ -18,6 +18,8 @@ interface SalesSummaryViewProps {
   bills: Bill[];
   expenses?: Expense[];
   shopName: string;
+  staff?: StaffMember[];
+  ownerName?: string;
   /** Free plan past the sales limit: downloads are locked, like the Report tab. */
   isDownloadLocked?: boolean;
   onUpgradePlan?: () => void;
@@ -33,6 +35,8 @@ export const SalesSummaryView = ({
   bills,
   expenses = [],
   shopName,
+  staff = [],
+  ownerName = 'Owner',
   isDownloadLocked = false,
   onUpgradePlan,
 }: SalesSummaryViewProps) => {
@@ -52,6 +56,19 @@ export const SalesSummaryView = ({
     () => (target ? getSummaryMonthDetail(bills, target.year, target.month, expenses) : null),
     [bills, target, expenses]
   );
+
+  const stylistRows = useMemo(
+    () => (target ? getStylistMonthBreakdown(bills, expenses, staff, ownerName, target.year, target.month) : []),
+    [bills, target, expenses, staff, ownerName]
+  );
+
+  const modeLabel = (m: string) =>
+    m
+      .replace('Pending', t('smPending', 'Pending'))
+      .replace('UPI', t('upi', 'UPI'))
+      .replace('Cash', t('cash', 'Cash'))
+      .replace('Card', t('card', 'Card'))
+      .replace('(part)', '(' + t('smPart', 'part') + ')');
 
   const monthName = (m: number) => new Date(2000, m, 1).toLocaleDateString(locale, { month: 'long' });
   const shortDate = (dateKey: string) => {
@@ -83,11 +100,11 @@ export const SalesSummaryView = ({
       const targetUri = `${FileSystem.cacheDirectory}${filename}`;
 
       if (kind === 'csv') {
-        await FileSystem.writeAsStringAsync(targetUri, buildMonthCsv(detail, meta), {
+        await FileSystem.writeAsStringAsync(targetUri, buildMonthCsv(detail, meta, stylistRows), {
           encoding: FileSystem.EncodingType.UTF8,
         });
       } else {
-        const { uri, base64 } = await Print.printToFileAsync({ html: buildMonthHtml(detail, meta), base64: true });
+        const { uri, base64 } = await Print.printToFileAsync({ html: buildMonthHtml(detail, meta, stylistRows), base64: true });
         if (base64) {
           await FileSystem.writeAsStringAsync(targetUri, base64, { encoding: FileSystem.EncodingType.Base64 });
         } else {
@@ -339,6 +356,64 @@ export const SalesSummaryView = ({
             </View>
           )}
 
+          {/* Money received, by how it was paid */}
+          {detail && (
+            <View style={[styles.monthKpiCard, glass.card, { borderWidth: 1 }]}>
+              <Text style={[styles.kpiLabel, { color: colors.textDim, marginBottom: 8 }]}>
+                {t('smReceived', 'Amount received')}
+              </Text>
+              {[
+                [t('upi', 'UPI'), detail.received.upiMinor],
+                [t('cash', 'Cash'), detail.received.cashMinor],
+                [t('card', 'Card'), detail.received.cardMinor],
+              ]
+                .filter(([, amt]) => (amt as number) > 0)
+                .map(([label, amt]) => (
+                  <View key={label as string} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 }}>
+                    <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '600' }}>{label}</Text>
+                    <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>{inrFromMinor(amt as number)}</Text>
+                  </View>
+                ))}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 4, borderTopWidth: 1, borderTopColor: colors.divider }}>
+                <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>{t('smReceivedTotal', 'Total received')}</Text>
+                <Text style={{ color: '#10B981', fontSize: 15, fontWeight: '800' }}>{inrFromMinor(detail.received.totalMinor)}</Text>
+              </View>
+              {detail.received.pendingMinor > 0 && (
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6 }}>
+                  <Text style={{ color: colors.textDim, fontSize: 12.5 }}>{t('smPending', 'Pending')}</Text>
+                  <Text style={{ color: colors.error, fontSize: 12.5, fontWeight: '700' }}>{inrFromMinor(detail.received.pendingMinor)}</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* Sales each stylist brought in, minus what they were paid */}
+          {detail && stylistRows.length > 0 && (
+            <View style={[styles.monthKpiCard, glass.card, { borderWidth: 1 }]}>
+              {stylistRows.map((r) => (
+                <View key={r.key} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 7, gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>
+                      {r.name} ({r.isOwner ? t('owner', 'Owner') : t('smRoleStylist', 'Stylist')})
+                    </Text>
+                    <Text style={[styles.kpiCount, { color: colors.textMuted }]}>
+                      {billsText(r.billsCount)}
+                      {r.payMinor > 0 ? ` · ${t('expenses', 'Expenses')} ${inrFromMinor(r.payMinor)}` : ''}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{ color: r.netMinor >= 0 ? '#10B981' : colors.error, fontSize: 14, fontWeight: '800' }}>
+                      {inrFromMinor(r.netMinor)}
+                    </Text>
+                    <Text style={[styles.kpiCount, { color: colors.textMuted }]}>
+                      {t('totalSales', 'Sales')} {inrFromMinor(r.salesMinor)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* Inside the month: one row per date, then downloads */}
           {detail && detail.days.length === 0 ? (
             <View style={styles.empty}>
@@ -350,6 +425,7 @@ export const SalesSummaryView = ({
                 <Text style={[styles.tCell, styles.tDate, styles.tHead, { color: colors.text }]}>{t('date', 'Date')}</Text>
                 <Text style={[styles.tCell, styles.tName, styles.tHead, { color: colors.text }]}>{t('smColName', 'Name')}</Text>
                 <Text style={[styles.tCell, styles.tService, styles.tHead, { color: colors.text }]}>{t('services', 'Services')}</Text>
+                <Text style={[styles.tCell, styles.tMode, styles.tHead, { color: colors.text }]}>{t('paymentMode', 'Payment Mode')}</Text>
                 <Text style={[styles.tCell, styles.tAmount, styles.tHead, { color: colors.text }]}>{t('amount', 'Amount')}</Text>
               </View>
               {detail?.days.flatMap((day) =>
@@ -364,6 +440,7 @@ export const SalesSummaryView = ({
                     <Text style={[styles.tCell, styles.tService, { color: colors.textDim }]}>
                       {b.services.length > 0 ? b.services.join(', ') : t('smGeneralService', 'General service')}
                     </Text>
+                    <Text style={[styles.tCell, styles.tMode, { color: colors.textDim }]}>{modeLabel(b.paymentMode)}</Text>
                     <Text style={[styles.tCell, styles.tAmount, { color: colors.text, fontWeight: '800' }]}>
                       {inrFromMinor(b.priceMinor)}
                     </Text>
@@ -453,6 +530,7 @@ const styles = StyleSheet.create({
   tDate: { width: 56 },
   tName: { flex: 1.1 },
   tService: { flex: 1.3 },
+  tMode: { width: 62, flexShrink: 0 },
   tAmount: { width: 78, flexShrink: 0, textAlign: 'right' },
   rowLabel: { fontSize: 15, fontWeight: '700' },
   rowSub: { fontSize: 12, marginTop: 1, lineHeight: 17 },

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { openWhatsAppPreferred } from '../../services/whatsappLauncher';
 import {
   View,
   Text,
@@ -122,24 +123,10 @@ export const CustomerDetailScreen = ({
       return;
     }
     const standardPhone = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
-    const greeting = encodeURIComponent(`Hi ${name || 'there'}, greeting from our salon! How can we assist you today?`);
-    const appUrl = `whatsapp://send?phone=91${standardPhone}&text=${greeting}`;
-    const webUrl = `https://wa.me/91${standardPhone}?text=${greeting}`;
-
-    Linking.canOpenURL(appUrl)
-      .then((supported) => {
-        if (supported) {
-          return Linking.openURL(appUrl);
-        } else {
-          return Linking.openURL(webUrl);
-        }
-      })
-      .catch(() => {
-        Linking.openURL(webUrl).catch((webErr) => {
-          console.warn('Could not launch WhatsApp:', webErr);
-          Alert.alert(t('error', 'Error'), t('cannotOpenWhatsApp', 'Unable to open WhatsApp on this device.'));
-        });
-      });
+    const greeting = `Hi ${name || 'there'}, greeting from our salon! How can we assist you today?`;
+    openWhatsAppPreferred(standardPhone, greeting).catch((e: unknown) =>
+      Alert.alert(t('error', 'Error'), e instanceof Error ? e.message : t('cannotOpenWhatsApp', 'Unable to open WhatsApp on this device.'))
+    );
   };
 
   // Real bills from Supabase/cache, sorted descending (latest first)

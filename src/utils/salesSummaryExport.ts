@@ -1,4 +1,4 @@
-import { SummaryMonthDetail, dateKeyOf } from './salesSummary';
+import { SummaryMonthDetail, StylistMonthRow, dateKeyOf } from './salesSummary';
 import { inrFromMinor } from './format';
 
 export interface MonthExportMeta {
@@ -21,14 +21,14 @@ const dayText = (dateKey: string): string => {
   return new Date(y, m - 1, d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 };
 
-export function buildMonthCsv(detail: SummaryMonthDetail, meta: MonthExportMeta): string {
+export function buildMonthCsv(detail: SummaryMonthDetail, meta: MonthExportMeta, stylists: StylistMonthRow[] = []): string {
   const rows: string[] = [];
   rows.push(`"StyleFleet Sales Summary"`);
   rows.push(`"Shop Name",${csvText(meta.shopName)}`);
   rows.push(`"Month",${csvText(meta.monthLabel)}`);
   rows.push(`"Generated On",${csvText(meta.generatedOn)}`);
   rows.push('');
-  rows.push(`"Date","Customer","Services","Price (INR)"`);
+  rows.push(`"Date","Customer","Services","Payment Mode","Price (INR)"`);
   for (const day of detail.days) {
     for (const b of day.bills) {
       rows.push(
@@ -36,7 +36,35 @@ export function buildMonthCsv(detail: SummaryMonthDetail, meta: MonthExportMeta)
           csvText(dayText(day.dateKey)),
           csvText(b.customerName || WALK_IN),
           csvText(b.services.join('; ')),
+          csvText(b.paymentMode),
           `"${(b.priceMinor / 100).toFixed(2)}"`,
+        ].join(',')
+      );
+    }
+  }
+
+  rows.push('');
+  rows.push(`"AMOUNT RECEIVED"`);
+  rows.push(`"Mode","Amount (INR)"`);
+  rows.push(`"UPI","${(detail.received.upiMinor / 100).toFixed(2)}"`);
+  rows.push(`"Cash","${(detail.received.cashMinor / 100).toFixed(2)}"`);
+  rows.push(`"Card","${(detail.received.cardMinor / 100).toFixed(2)}"`);
+  rows.push(`"Total Received","${(detail.received.totalMinor / 100).toFixed(2)}"`);
+  rows.push(`"Pending (billed, not received)","${(detail.received.pendingMinor / 100).toFixed(2)}"`);
+
+  if (stylists.length > 0) {
+    rows.push('');
+    rows.push(`"SALES BY TEAM MEMBER"`);
+    rows.push(`"Name","Role","Bills","Sales (INR)","Paid (INR)","Net (INR)"`);
+    for (const r of stylists) {
+      rows.push(
+        [
+          csvText(r.name),
+          csvText(r.isOwner ? 'Owner' : 'Stylist'),
+          `"${r.billsCount}"`,
+          `"${(r.salesMinor / 100).toFixed(2)}"`,
+          `"${(r.payMinor / 100).toFixed(2)}"`,
+          `"${(r.netMinor / 100).toFixed(2)}"`,
         ].join(',')
       );
     }
@@ -74,7 +102,7 @@ export function buildMonthCsv(detail: SummaryMonthDetail, meta: MonthExportMeta)
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta): string {
+export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta, stylists: StylistMonthRow[] = []): string {
   const dayBlocks = detail.days
     .map(
       (day) => `
@@ -88,6 +116,7 @@ export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta
           (b) => `<tr>
         <td class="cust">${esc(b.customerName || WALK_IN)}</td>
         <td>${esc(b.services.join(', ') || 'General service')}</td>
+        <td style="white-space: nowrap; color: #6B7280;">${esc(b.paymentMode)}</td>
         <td class="num">${esc(inrFromMinor(b.priceMinor))}</td>
       </tr>`
         )
@@ -96,6 +125,53 @@ export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta
   </table>`
     )
     .join('\n');
+
+  const r = detail.received;
+  const receivedBlock = `
+  <div class="section-title" style="margin-top: 24px; font-weight: 800; font-size: 14px; border-bottom: 2px solid #10B981; padding-bottom: 6px;">
+    Amount Received
+  </div>
+  <table>
+    <tbody>
+      <tr><td style="font-weight: 600;">UPI</td><td class="num">${esc(inrFromMinor(r.upiMinor))}</td></tr>
+      <tr><td style="font-weight: 600;">Cash</td><td class="num">${esc(inrFromMinor(r.cashMinor))}</td></tr>
+      <tr><td style="font-weight: 600;">Card</td><td class="num">${esc(inrFromMinor(r.cardMinor))}</td></tr>
+      <tr><td style="font-weight: 800;">Total Received</td><td class="num" style="color: #10B981;">${esc(inrFromMinor(r.totalMinor))}</td></tr>
+      ${r.pendingMinor > 0 ? `<tr><td style="color: #6B7280;">Pending (billed, not received)</td><td class="num" style="color: #EF4444;">${esc(inrFromMinor(r.pendingMinor))}</td></tr>` : ''}
+    </tbody>
+  </table>`;
+
+  const stylistBlock =
+    stylists.length > 0
+      ? `
+  <div class="section-title" style="margin-top: 24px; font-weight: 800; font-size: 14px; border-bottom: 2px solid #D4AF37; padding-bottom: 6px;">
+    Sales by Team Member
+  </div>
+  <table>
+    <thead>
+      <tr style="background: #F9FAFB; font-weight: 700; color: #4B5563;">
+        <td>Name</td>
+        <td>Bills</td>
+        <td style="text-align: right;">Sales</td>
+        <td style="text-align: right;">Paid</td>
+        <td style="text-align: right;">Net</td>
+      </tr>
+    </thead>
+    <tbody>
+      ${stylists
+        .map(
+          (r) => `<tr>
+        <td style="font-weight: 600;">${esc(r.name)} (${r.isOwner ? 'Owner' : 'Stylist'})</td>
+        <td>${r.billsCount}</td>
+        <td class="num">${esc(inrFromMinor(r.salesMinor))}</td>
+        <td class="num" style="color: #EF4444;">${esc(inrFromMinor(r.payMinor))}</td>
+        <td class="num" style="color: ${r.netMinor >= 0 ? '#10B981' : '#EF4444'};">${esc(inrFromMinor(r.netMinor))}</td>
+      </tr>`
+        )
+        .join('\n      ')}
+    </tbody>
+  </table>`
+      : '';
 
   const hasExpenses = detail.expenses && detail.expenses.length > 0;
   const expensesBlock = hasExpenses
@@ -183,6 +259,8 @@ export function buildMonthHtml(detail: SummaryMonthDetail, meta: MonthExportMeta
   ` : ''}
 
   ${dayBlocks || '<p>No sales recorded in this month.</p>'}
+  ${receivedBlock}
+  ${stylistBlock}
   ${expensesBlock}
 
   <div class="total">

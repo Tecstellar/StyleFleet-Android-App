@@ -633,7 +633,7 @@ const styles = StyleSheet.create({
   searchInput: { height: 44, borderWidth: 1, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 14, marginBottom: 10 },
   customerList: { gap: 6 },
   showMoreBtn: { paddingVertical: 12, borderRadius: radii.sm, alignItems: 'center', borderWidth: 1, marginTop: 4 },
-  bottomBar: { borderTopWidth: 1, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 14, gap: 8 },
+  bottomBar: { borderTopWidth: 1, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 24, gap: 8 },
   batchNote: { fontSize: 12, textAlign: 'center' },
   sendBulkBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: 13, paddingHorizontal: 12, borderRadius: radii.md },
   sendBulkBtnText: { fontSize: 14.5, fontWeight: '700', textAlign: 'center' },

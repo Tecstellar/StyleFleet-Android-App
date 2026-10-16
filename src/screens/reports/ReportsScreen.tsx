@@ -1277,6 +1277,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             bills={bills}
             expenses={expenses}
             shopName={shopName}
+            staff={staff}
+            ownerName={ownerName}
             isDownloadLocked={isReportDownloadLocked}
             onUpgradePlan={onUpgradePlan}
           />

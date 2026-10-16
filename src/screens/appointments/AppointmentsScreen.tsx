@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { openWhatsAppPreferred } from '../../services/whatsappLauncher';
 import {
   View,
   Text,
@@ -643,19 +644,7 @@ export const AppointmentsScreen = ({
     }
 
     const msg = `Hello ${a.customer_name}! 💈 Reminder from *${shopName}*: ${timeNote} Please come to the salon at that time. See you soon! ✨`;
-    const url = `https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`;
-
-    Linking.canOpenURL(url)
-      .then((supported) => {
-        if (supported) {
-          Linking.openURL(url);
-        } else {
-          Alert.alert('Notice', 'WhatsApp application is not installed on this device');
-        }
-      })
-      .catch(() => {
-        Alert.alert('Notice', 'Could not open WhatsApp');
-      });
+    openWhatsAppPreferred(phone, msg).catch((e: unknown) => Alert.alert('WhatsApp', e instanceof Error ? e.message : 'Could not open WhatsApp.'));
   };
 
   const glass = getGlass(colors.isDark);

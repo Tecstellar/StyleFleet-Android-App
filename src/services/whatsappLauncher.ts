@@ -1,4 +1,5 @@
-import { Linking, Platform } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as IntentLauncher from 'expo-intent-launcher';
 
 export interface WhatsAppApp {
@@ -56,7 +57,31 @@ export async function getInstalledWhatsAppApps(): Promise<InstalledWhatsAppApp[]
   return found.filter((a): a is InstalledWhatsAppApp => a !== null);
 }
 
-/** Open a chat with the prepared message, in the chosen app or the system default. */
+const PREFERRED_KEY = '@stylefleet_whatsapp_app';
+
+/** The WhatsApp the owner picked last time, so every screen opens the same one. */
+export async function getPreferredWhatsAppId(): Promise<WhatsAppApp['id'] | null> {
+  try {
+    const v = await AsyncStorage.getItem(PREFERRED_KEY);
+    return v === 'whatsapp' || v === 'business' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setPreferredWhatsApp(id: WhatsAppApp['id']): Promise<void> {
+  try {
+    await AsyncStorage.setItem(PREFERRED_KEY, id);
+  } catch {
+    // remembering is a convenience: the chat still opens
+  }
+}
+
+/**
+ * Open a chat with the prepared message. With an app given, only that app is used: if it cannot open
+ * the chat we say so, instead of quietly opening the other WhatsApp (which sent bills to the wrong
+ * account). Without an app the system default opens it.
+ */
 export async function openWhatsAppChat(phone10: string, message: string, app?: WhatsAppApp): Promise<void> {
   const urls = buildChatUrls(phone10, message);
 
@@ -68,7 +93,9 @@ export async function openWhatsAppChat(phone10: string, message: string, app?: W
       });
       return;
     } catch {
-      // chosen app could not open the chat: fall through to the system default
+      throw new Error(
+        `Could not open ${app.label}. Make sure it is installed and signed in, or choose the other WhatsApp.`
+      );
     }
   }
 
@@ -81,4 +108,41 @@ export async function openWhatsAppChat(phone10: string, message: string, app?: W
     // fall through to the web link
   }
   await Linking.openURL(urls.web);
+}
+
+/** Ask which WhatsApp to use (a plain two-button dialog); null when dismissed. */
+function askWhichWhatsApp(installed: InstalledWhatsAppApp[]): Promise<InstalledWhatsAppApp | null> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      'Send with which WhatsApp?',
+      'You have both WhatsApp and WhatsApp Business. Your choice is remembered.',
+      [
+        ...installed.map((a) => ({ text: a.label, onPress: () => resolve(a) })),
+        { text: 'Cancel', style: 'cancel' as const, onPress: () => resolve(null) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(null) }
+    );
+  });
+}
+
+/**
+ * The one way every screen (reminders, offers, greetings, invites) opens a chat. With both apps
+ * installed it uses the remembered choice, asking once if there is none; with one app it uses that app.
+ */
+export async function openWhatsAppPreferred(phone10: string, message: string): Promise<void> {
+  if (Platform.OS === 'android') {
+    const installed = await getInstalledWhatsAppApps();
+    if (installed.length === 1) return openWhatsAppChat(phone10, message, installed[0]);
+    if (installed.length >= 2) {
+      const preferred = await getPreferredWhatsAppId();
+      let app: InstalledWhatsAppApp | null | undefined = installed.find((a) => a.id === preferred);
+      if (!app) {
+        app = await askWhichWhatsApp(installed);
+        if (!app) return;
+        await setPreferredWhatsApp(app.id);
+      }
+      return openWhatsAppChat(phone10, message, app);
+    }
+  }
+  return openWhatsAppChat(phone10, message);
 }

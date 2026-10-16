@@ -224,7 +224,7 @@ export const HomeScreen = ({
     return bills.filter((b) => {
       if (!b || b.status === 'deleted') return false;
       if (isStylist) {
-        const dateStr = b.issued_at || b.created_at;
+        const dateStr = b.created_at || b.issued_at;
         if (!dateStr) return false;
         const d = new Date(dateStr);
         if (isNaN(d.getTime())) return false;
@@ -258,8 +258,8 @@ export const HomeScreen = ({
   const recentBills = useMemo(() => {
     return [...activeBills]
       .sort((a, b) => {
-        const tA = new Date(a.issued_at || a.created_at || '').getTime();
-        const tB = new Date(b.issued_at || b.created_at || '').getTime();
+        const tA = new Date(a.created_at || a.issued_at || '').getTime();
+        const tB = new Date(b.created_at || b.issued_at || '').getTime();
         return tB - tA;
       })
       .slice(0, 15);

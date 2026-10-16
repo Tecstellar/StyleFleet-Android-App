@@ -52,7 +52,8 @@
         }
       ],
       "expo-video",
-      "./plugins/withWhatsAppQueries"
+      "./plugins/withWhatsAppQueries",
+      "./plugins/withIntentLauncherPackage"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

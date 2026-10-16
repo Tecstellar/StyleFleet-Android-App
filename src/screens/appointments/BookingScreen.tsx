@@ -250,7 +250,12 @@ export const BookingScreen = ({
     if (initialStaffIds && initialStaffIds.length > 0) return initialStaffIds;
     return defaultStaffId && staff.some((s) => s.id === defaultStaffId && s.is_active !== false) ? [defaultStaffId] : [];
   });
-  const [isOwnerSelected, setIsOwnerSelected] = useState<boolean>(false);
+  // No active stylists: only the owner can serve, so the stylist step is skipped and the owner is booked.
+  const ownerOnly = !staff.some((s) => s.is_active !== false);
+  const [isOwnerSelected, setIsOwnerSelected] = useState<boolean>(ownerOnly);
+  useEffect(() => {
+    if (ownerOnly) setIsOwnerSelected(true);
+  }, [ownerOnly]);
 
   // Date selection - yesterday (for back-dated entries), today and the next 13 days. Today is pre-selected.
   const [selectedDayOffset, setSelectedDayOffset] = useState<number | null>(0);
@@ -866,7 +871,7 @@ export const BookingScreen = ({
         {/* ======================================================== */}
         {/* 3. STYLIST (Single or Multiple Stylists)                 */}
         {/* ======================================================== */}
-        {!stylistLocked && (
+        {!ownerOnly && (
         <>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 18 }}>
           <Text style={[styles.sectionLabel, { color: colors.textDim }]}>
@@ -907,7 +912,7 @@ export const BookingScreen = ({
           </TouchableOpacity>
 
           {/* Named Stylists */}
-          {staff.map((s) => {
+          {staff.filter((s) => !stylistLocked || s.id === defaultStaffId).map((s) => {
             const isSelected = selectedStaffIds.includes(s.id);
             return (
               <TouchableOpacity
@@ -1722,7 +1727,8 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 24,
     borderTopWidth: 1,
   },
   sheetOverlay: {

@@ -6,6 +6,18 @@ import { Appointment, AppointmentStatus } from '../types/domain';
 
 const STORAGE_KEY_APPTS = '@salon_os_appts_cache';
 
+/**
+ * starts_at is a timestamptz column but we save the salon's wall-clock text ("2026-10-15 8:00 PM"),
+ * which the database keeps as that same clock time in UTC. Read it back as the same clock text,
+ * not shifted into the phone's time zone.
+ */
+const dbWallClock = (startsAt: string): string => {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|\+00(?::?00)?)$/.exec(startsAt || '');
+  if (!m) return startsAt;
+  const h = parseInt(m[2], 10);
+  return `${m[1]} ${h % 12 === 0 ? 12 : h % 12}:${m[3]} ${h >= 12 ? 'PM' : 'AM'}`;
+};
+
 export const STANDARD_SLOTS = [
   '9:30', '10:00', '10:30', '11:00', '11:30', '12:00',
   '2:00', '2:30', '3:00', '4:00', '4:30', '5:30'
@@ -72,7 +84,7 @@ export class AppointmentRepository {
             service_id: a.service_id,
             service_ids: serviceIds,
             service_name: (a.services as any)?.name || 'Service',
-            starts_at: a.starts_at,
+            starts_at: dbWallClock(a.starts_at),
             duration_minutes: a.duration_minutes,
             status: a.status as AppointmentStatus,
             notes: a.notes,
